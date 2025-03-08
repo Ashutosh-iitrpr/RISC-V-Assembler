@@ -1,7 +1,4 @@
 # RISC-V-Assembler
-====================================================
-          RISC-V 32-bit Assembler Project
-====================================================
 
 OVERVIEW
 --------
@@ -112,6 +109,3 @@ For questions, issues, or contributions, please contact:
    [Aryan Sodhi] - [2023csb1288@iitrpr.ac.in]
    [Bhavya Rao] - [2023csb1291@iitrpr.ac.in]
 
-====================================================
-                END OF README
-====================================================
