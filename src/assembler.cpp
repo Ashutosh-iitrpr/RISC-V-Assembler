@@ -93,7 +93,9 @@ uint32_t encodeInstruction(const InstructionLine &inst,
         int rd  = getRegisterNumber(op[0]);
         int rs1 = getRegisterNumber(op[1]);
         int rs2 = getRegisterNumber(op[2]);
-        auto [opcode, func3, func7] = rTable[mnemonic];
+        // auto [opcode, func3, func7] = rTable[mnemonic];
+        uint8_t opcode, func3, func7;
+        tie(opcode, func3, func7) = rTable[mnemonic];
         machineCode = encodeRType(opcode, func3, func7, rd, rs1, rs2);
         bitBreakdown = buildBitCommentR(opcode, func3, func7, rd, rs1, rs2);
     }
@@ -155,7 +157,9 @@ uint32_t encodeInstruction(const InstructionLine &inst,
         int rd = getRegisterNumber(op[0]);
         int rs1 = getRegisterNumber(op[1]);
         int32_t immVal = parseImmOrLabel(op[2], inst.address);
-        auto [opcode, func3] = iTable[mnemonic];
+        // auto [opcode, func3] = iTable[mnemonic];
+        uint8_t opcode, func3;
+        tie(opcode, func3) = iTable[mnemonic];
         machineCode = encodeIType(opcode, func3, rd, rs1, immVal);
         bitBreakdown = buildBitCommentI(opcode, func3, rd, rs1, immVal);
     }
