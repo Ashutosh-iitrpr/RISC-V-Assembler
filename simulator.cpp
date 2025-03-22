@@ -246,7 +246,11 @@ bool parseMCFile(const std::string &filename) {
     }
     std::string line;
     while (std::getline(fin, line)) {
-        if (line.empty() || line[0]=='#')
+        size_t commentPos = line.find('#');
+        if (commentPos != std::string::npos) {
+            line = line.substr(0, commentPos);
+        }
+        if (line.empty())
             continue;
         std::stringstream ss(line);
         std::string addrStr, dataStr;
