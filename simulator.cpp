@@ -21,6 +21,7 @@ int32_t RB = 0;            // Second operand (set to immediate for I-type and me
 int32_t RM = 0;            // Register value from rs2 (used in store data)
 int32_t RZ = 0;            // ALU output (e.g., effective address)
 int32_t RY = 0;            // Write-back result (selected from RZ, memory data, or return address)
+int32_t MDR = 0;           // Memory Data Register: holds data fetched from memory
 
 uint64_t clockCycle = 0;   // Clock cycle counter
 
@@ -289,7 +290,7 @@ void printRegisters() {
     std::cout << "PC = 0x" << std::hex << PC << std::dec
               << "  IR = 0x" << std::hex << IR << std::dec << "\n";
     std::cout << "RA = " << RA << "  RB = " << RB << "  RM = " << RM << "\n";
-    std::cout << "RZ = " << RZ << "  RY = " << RY << "\n";
+    std::cout << "RZ = " << RZ << "  RY = " << RY << "  MDR = " << MDR << "\n";
     std::cout << "===========================================\n";
 }
 
@@ -314,7 +315,20 @@ int main(int argc, char* argv[]) {
     PC = 0;
     clockCycle = 0;
    
+    std::cout << "Initial state of registers:\n";
+    printRegisters();
+   
+    // Prompt user for input
+    char userInput;
+    std::cout << "Enter N for next instruction, R for remaining output, E to exit: ";
+    std::cin >> userInput;
+    if (userInput == 'E' || userInput == 'e') {
+        std::cout << "Exiting simulation as per user request.\n";
+        return 0;
+    }
+   
     std::cout << "Beginning simulation...\n";
+    bool printRemaining = (userInput == 'R' || userInput == 'r');
     while (true) {
         std::cout << "Clock Cycle: " << clockCycle << "\n";
        
@@ -344,10 +358,14 @@ int main(int argc, char* argv[]) {
         // Operand Setup:
         RA = R[d.rs1];
         // For I-type instructions, loads, stores, JALR, and LUI, set RB to the immediate.
-        if (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67 || d.opcode == 0x37 || d.opcode == 0x23)
+        if (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67 || d.opcode == 0x37 || d.opcode == 0x23) {
             RB = d.imm;
-        else
+        } else if (d.opcode == 0x17) { // AUIPC
+            RA = PC;
+            RB = d.imm;
+        } else {
             RB = R[d.rs2];
+        }
         // RM holds the register file value from rs2 (used for stores).
         RM = R[d.rs2];
        
@@ -483,7 +501,8 @@ int main(int argc, char* argv[]) {
                 switch (d.funct3) {
                     case 0x0: {
                         int8_t val = dataSegment.readByte(addr);
-                        RY = val;
+                        MDR = val;
+                        RY = MDR;
                         std::cout << "[Execute] LB: loaded byte " << (int)val
                                   << " from 0x" << std::hex << addr << std::dec << "\n";
                     } break;
@@ -495,13 +514,15 @@ int main(int argc, char* argv[]) {
                                 b = dataSegment.memory[addr + i];
                             val |= (b << (8 * i));
                         }
-                        RY = val;
+                        MDR = val;
+                        RY = MDR;
                         std::cout << "[Execute] LH: loaded halfword " << val
                                   << " from 0x" << std::hex << addr << std::dec << "\n";
                     } break;
                     case 0x2: {
                         int32_t val = dataSegment.readWord(addr);
-                        RY = val;
+                        MDR = val;
+                        RY = MDR;
                         std::cout << "[Execute] LW: loaded word " << val
                                   << " from 0x" << std::hex << addr << std::dec << "\n";
                     } break;
@@ -650,6 +671,18 @@ int main(int argc, char* argv[]) {
         PC = nextPC;
         printRegisters();
         clockCycle++;
+
+        if (!printRemaining) {
+            // Prompt user for input
+            std::cout << "Enter N for next instruction, R for remaining output, E to exit: ";
+            std::cin >> userInput;
+            if (userInput == 'E' || userInput == 'e') {
+                std::cout << "Exiting simulation as per user request.\n";
+                break;
+            } else if (userInput == 'R' || userInput == 'r') {
+                printRemaining = true;
+            }
+        }
     }
    
     std::cout << "Simulation finished after " << clockCycle << " clock cycles.\n";
