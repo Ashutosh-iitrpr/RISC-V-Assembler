@@ -6,68 +6,39 @@
 #include <string>
 #include <cstdint>
 #include <iomanip>
+#include <algorithm>  // for std::sort
+#include <set>
 
 // =====================================================================
-// Global CPU State Definitions
+// Global CPU State
 // =====================================================================
 static const int NUM_REGS = 32;
-int32_t R[NUM_REGS];       // Register file (32 registers)
+int32_t R[NUM_REGS];       // Register file
 
-// Global CPU registers:
-uint32_t PC = 0;           // Program Counter: current instruction address
-uint32_t IR = 0;           // Instruction Register: current instruction
-int32_t RA = 0;            // First operand (from register file or PC)
-int32_t RB = 0;            // Second operand (set to immediate for I-type and memory ops)
-int32_t RM = 0;            // Register value from rs2 (used in store data)
-int32_t RZ = 0;            // ALU output (e.g., effective address)
-int32_t RY = 0;            // Write-back result (selected from RZ, memory data, or return address)
-int32_t MDR = 0;           // Memory Data Register: holds data fetched from memory
+uint32_t PC = 0;           // Program Counter
+uint32_t IR = 0;           // Instruction Register
+int32_t  RA = 0;           // Operand A
+int32_t  RB = 0;           // Operand B
+int32_t  RM = 0;           // Used for store data
+int32_t  RZ = 0;           // ALU output
+int32_t  RY = 0;           // Write-back data
+int32_t  MDR= 0;           // Memory data register
 
-uint64_t clockCycle = 0;   // Clock cycle counter
+uint64_t clockCycle = 0;   // Cycle counter
 
-// Instruction memory: maps address -> 32-bit instruction
+// =====================================================================
+// Instruction Memory (< 0x10000000)
+// =====================================================================
 std::map<uint32_t, uint32_t> instrMemory;
 
 // =====================================================================
-// DataSegment Class: Dynamic Data Segment
+// DataSegment Class (handles a map of address -> byte)
+// We'll use it for both data memory and stack memory
 // =====================================================================
-class DataSegment {
+class MemSegment {
 public:
-    // Memory is stored per byte (address -> 8-bit value)
+    // Each address in "memory" is one byte
     std::map<uint32_t, uint8_t> memory;
-
-    void loadFromFile(const std::string &filename) {
-        std::ifstream fin(filename);
-        if (!fin.is_open()) {
-            std::cerr << "ERROR: Could not open file " << filename << " for data segment loading.\n";
-            return;
-        }
-        std::string line;
-        while (std::getline(fin, line)) {
-            if (line.empty() || line[0]=='#')
-                continue;
-            std::stringstream ss(line);
-            std::string addrStr, dataStr;
-            ss >> addrStr >> dataStr;
-            if (addrStr.empty() || dataStr.empty())
-                continue;
-            size_t pos = dataStr.find(',');
-            if (pos != std::string::npos)
-                dataStr = dataStr.substr(0, pos);
-            try {
-                uint32_t address = std::stoul(addrStr, nullptr, 16);
-                if (address >= 0x10000000) {
-                    uint32_t data = std::stoul(dataStr, nullptr, 16);
-                    for (int i = 0; i < 4; i++) {
-                        memory[address + i] = (data >> (8 * i)) & 0xFF;
-                    }
-                }
-            } catch (...) {
-                continue;
-            }
-        }
-        fin.close();
-    }
 
     void writeByte(uint32_t address, uint8_t value) {
         memory[address] = value;
@@ -75,102 +46,166 @@ public:
 
     void writeWord(uint32_t address, int32_t value) {
         for (int i = 0; i < 4; i++) {
-            memory[address + i] = (value >> (8 * i)) & 0xFF;
+            memory[address + i] = static_cast<uint8_t>((value >> (8 * i)) & 0xFF);
         }
     }
 
-    int32_t readWord(uint32_t address) {
+    int8_t readByte(uint32_t address) const {
+        auto it = memory.find(address);
+        if (it != memory.end()) {
+            return static_cast<int8_t>(it->second);
+        }
+        return 0;
+    }
+
+    int32_t readWord(uint32_t address) const {
         int32_t result = 0;
         for (int i = 0; i < 4; i++) {
-            uint8_t b = 0;
-            if (memory.find(address + i) != memory.end())
-                b = memory[address + i];
+            auto it = memory.find(address + i);
+            uint8_t b = (it != memory.end()) ? it->second : 0;
             result |= (b << (8 * i));
         }
         return result;
     }
-
-    int8_t readByte(uint32_t address) {
-        if (memory.find(address) != memory.end())
-            return (int8_t) memory[address];
-        return 0;
-    }
-
-    void updateInputFile(const std::string &filename) {
-        std::ifstream fin(filename);
-        if (!fin.is_open()){
-            std::cerr << "ERROR: Could not open file " << filename << " for updating.\n";
-            return;
-        }
-        std::vector<std::string> lines;
-        std::string line;
-        while (std::getline(fin, line))
-            lines.push_back(line);
-        fin.close();
-
-        for (auto &l : lines) {
-            if (l.empty() || l[0]=='#')
-                continue;
-            std::stringstream ss(l);
-            std::string addrStr, dataStr;
-            ss >> addrStr >> dataStr;
-            if (addrStr.empty() || dataStr.empty())
-                continue;
-            try {
-                uint32_t addr = std::stoul(addrStr, nullptr, 16);
-                if (addr >= 0x10000000) {
-                    int32_t word = readWord(addr);
-                    std::stringstream newData;
-                    newData << "0x" << std::hex << std::setw(8) << std::setfill('0') << word;
-                    std::string rest;
-                    std::getline(ss, rest);
-                    l = addrStr + " " + newData.str() + rest;
-                }
-            } catch (...) {
-                continue;
-            }
-        }
-        std::ofstream fout(filename);
-        if (!fout.is_open()){
-            std::cerr << "ERROR: Could not open file " << filename << " for writing.\n";
-            return;
-        }
-        for (const auto &l : lines)
-            fout << l << "\n";
-        fout.close();
-        std::cout << "Input file data segment updated successfully.\n";
-    }
 };
 
-DataSegment dataSegment;
+// =====================================================================
+// We will have two separate MemSegments for data and stack
+// =====================================================================
+MemSegment dataSegment;   // for addresses in [0x10000000, 0x7FFFFFFF)
+MemSegment stackSegment;  // for addresses >= 0x7FFFFFFF
 
 // =====================================================================
-// Utility Functions for Bit Manipulation and Sign Extension
+// Dumping memory to an .mc file
+//   - Writes each 4-byte aligned address in ascending order
+//   - Only writes addresses actually stored in the memory map
+//   - Skips addresses outside the intended segment's range
+// =====================================================================
+void dumpSegmentToFile(const std::string &filename,
+                       const MemSegment &seg,
+                       uint32_t startAddr,
+                       uint32_t endAddr /* inclusive or exclusive? */)
+{
+    // Open file for overwrite
+    std::ofstream fout(filename);
+    if (!fout.is_open()) {
+        std::cerr << "ERROR: Could not open/create " << filename << "\n";
+        return;
+    }
+
+    // Gather addresses from seg.memory
+    std::vector<uint32_t> addresses;
+    addresses.reserve(seg.memory.size());
+    for (const auto &kv : seg.memory) {
+        addresses.push_back(kv.first);
+    }
+    std::sort(addresses.begin(), addresses.end());
+
+    // We'll write lines only for addresses in [startAddr, endAddr]
+    // For the stack region, if endAddr < startAddr, we'll interpret that accordingly.
+    // But here, let's just check the range as you prefer:
+    std::set<uint32_t> visited;
+
+    for (uint32_t addr : addresses) {
+        if (addr < startAddr) {
+            continue;
+        }
+        if (endAddr >= startAddr) {
+            // "normal" range check
+            if (addr >= endAddr) {
+                continue;
+            }
+        } else {
+            // If endAddr < startAddr, you might interpret it differently, but
+            // for simplicity, let's just not do anything special.
+        }
+
+        // Only write 4-byte-aligned addresses
+        if ((addr % 4) != 0) {
+            continue;
+        }
+        // skip if we've visited it
+        if (visited.count(addr) != 0) {
+            continue;
+        }
+
+        // read the 32-bit word
+        int32_t wordVal = seg.readWord(addr);
+
+        fout << std::hex << "0x"
+             << std::setw(8) << std::setfill('0') << addr << "  0x"
+             << std::setw(8) << std::setfill('0') << static_cast<uint32_t>(wordVal)
+             << std::dec << "\n";
+
+        // Mark 4 bytes visited
+        visited.insert(addr + 0);
+        visited.insert(addr + 1);
+        visited.insert(addr + 2);
+        visited.insert(addr + 3);
+    }
+
+    fout.close();
+}
+
+// =====================================================================
+// Dumping the instruction memory (which is map<uint32_t, uint32_t>)
+// to instruction.mc
+// =====================================================================
+void dumpInstructionMemoryToFile(const std::string &filename) {
+    std::ofstream fout(filename);
+    if (!fout.is_open()) {
+        std::cerr << "ERROR: Could not open/create " << filename << "\n";
+        return;
+    }
+
+    // gather addresses
+    std::vector<uint32_t> addresses;
+    addresses.reserve(instrMemory.size());
+    for (auto &kv : instrMemory) {
+        addresses.push_back(kv.first);
+    }
+    std::sort(addresses.begin(), addresses.end());
+
+    // write
+    for (auto addr : addresses) {
+        // each entry is already a full 32-bit instruction
+        uint32_t word = instrMemory[addr];
+        fout << std::hex
+             << "0x" << std::setw(8) << std::setfill('0') << addr
+             << "  0x" << std::setw(8) << std::setfill('0') << word
+             << std::dec << "\n";
+    }
+    fout.close();
+}
+
+// =====================================================================
+// Helper: signExtend, getBits
 // =====================================================================
 static inline uint32_t getBits(uint32_t val, int hi, int lo) {
     uint32_t mask = (1u << (hi - lo + 1)) - 1;
     return (val >> lo) & mask;
 }
+
 static inline int32_t signExtend(uint32_t value, int bitCount) {
     int shift = 32 - bitCount;
     return (int32_t)((int32_t)(value << shift) >> shift);
 }
 
 // =====================================================================
-// Decoded Instruction Structure
+// DecodedInstr
 // =====================================================================
 struct DecodedInstr {
     uint32_t opcode;
     uint32_t rd;
     uint32_t rs1;
-    uint32_t rs2;    // For I-type instructions, set to 0.
+    uint32_t rs2;
     uint32_t funct3;
-    uint32_t funct7; // For I-type instructions, set to 0.
-    int32_t  imm;    // Sign-extended immediate.
+    uint32_t funct7;
+    int32_t  imm;
 };
 
 // =====================================================================
-// Instruction Decode Function
+// decode
 // =====================================================================
 DecodedInstr decode(uint32_t instr) {
     DecodedInstr d{};
@@ -178,6 +213,8 @@ DecodedInstr decode(uint32_t instr) {
     d.rd     = getBits(instr, 11, 7);
     d.funct3 = getBits(instr, 14, 12);
     d.rs1    = getBits(instr, 19, 15);
+
+    // Some opcodes ignore rs2/funct7 in decode
     if (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67) {
         d.rs2 = 0;
         d.funct7 = 0;
@@ -185,6 +222,8 @@ DecodedInstr decode(uint32_t instr) {
         d.rs2    = getBits(instr, 24, 20);
         d.funct7 = getBits(instr, 31, 25);
     }
+
+    // decode immediate
     switch(d.opcode) {
         case 0x13: // I-type ALU
         case 0x03: // I-type LOAD
@@ -192,85 +231,106 @@ DecodedInstr decode(uint32_t instr) {
             uint32_t imm12 = getBits(instr, 31, 20);
             d.imm = signExtend(imm12, 12);
         } break;
-        case 0x23: { // S-type (store)
+        case 0x23: { // S-type
             uint32_t immHigh = getBits(instr, 31, 25);
             uint32_t immLow  = getBits(instr, 11, 7);
-            uint32_t imm12   = (immHigh << 5) | immLow;
+            uint32_t imm12 = (immHigh << 5) | immLow;
             d.imm = signExtend(imm12, 12);
         } break;
-        case 0x63: { // SB-type (branch)
-            uint32_t immBit12   = getBits(instr, 31, 31);
-            uint32_t immBit11   = getBits(instr, 7, 7);
-            uint32_t immBits10_5= getBits(instr, 30, 25);
-            uint32_t immBits4_1 = getBits(instr, 11, 8);
-            uint32_t immAll = (immBit12 << 12) | (immBit11 << 11) |
-                              (immBits10_5 << 5) | (immBits4_1 << 1);
+        case 0x63: { // SB-type
+            uint32_t immBit12    = getBits(instr, 31, 31);
+            uint32_t immBit11    = getBits(instr, 7, 7);
+            uint32_t immBits10_5 = getBits(instr, 30, 25);
+            uint32_t immBits4_1  = getBits(instr, 11, 8);
+            uint32_t immAll = (immBit12 << 12) | (immBit11 << 11)
+                            | (immBits10_5 << 5) | (immBits4_1 << 1);
             d.imm = signExtend(immAll, 13);
         } break;
         case 0x37: // LUI
         case 0x17: { // AUIPC
             uint32_t imm20 = getBits(instr, 31, 12);
-            d.imm = imm20 << 12;
+            d.imm = (int32_t)(imm20 << 12);
         } break;
         case 0x6F: { // UJ-type (JAL)
             uint32_t immBit20    = getBits(instr, 31, 31);
             uint32_t immBits19_12= getBits(instr, 19, 12);
             uint32_t immBit11    = getBits(instr, 20, 20);
             uint32_t immBits10_1 = getBits(instr, 30, 21);
-            uint32_t immAll = (immBit20 << 20) | (immBits19_12 << 12) |
-                              (immBit11 << 11) | (immBits10_1 << 1);
+            uint32_t immAll = (immBit20 << 20) | (immBits19_12 << 12)
+                            | (immBit11 << 11) | (immBits10_1 << 1);
             d.imm = signExtend(immAll, 21);
         } break;
         default:
             d.imm = 0;
             break;
     }
+
     return d;
 }
 
 // =====================================================================
-// Check Termination Instruction
+// isTerminationInstr
 // =====================================================================
 bool isTerminationInstr(uint32_t instr) {
     return (instr == 0x00000000);
 }
 
 // =====================================================================
-// Parse the input.mc File
+// parseInputMC: read addresses from input.mc and distribute them
+//   - <0x10000000 => instrMemory
+//   - [0x10000000, 0x7FFFFFFF) => dataSegment
+//   - >=0x7FFFFFFF => stackSegment
 // =====================================================================
-bool parseMCFile(const std::string &filename) {
+bool parseInputMC(const std::string &filename) {
     std::ifstream fin(filename);
-    if (!fin.is_open()){
-        std::cerr << "ERROR: Could not open file " << filename << "\n";
+    if (!fin.is_open()) {
+        std::cerr << "ERROR: Could not open " << filename << "\n";
         return false;
     }
+
     std::string line;
     while (std::getline(fin, line)) {
-        size_t commentPos = line.find('#');
-        if (commentPos != std::string::npos) {
-            line = line.substr(0, commentPos);
+        // remove comments
+        size_t cpos = line.find('#');
+        if (cpos != std::string::npos) {
+            line = line.substr(0, cpos);
         }
-        if (line.empty())
+        if (line.empty()) {
             continue;
+        }
+
         std::stringstream ss(line);
         std::string addrStr, dataStr;
         ss >> addrStr >> dataStr;
-        if (addrStr.empty() || dataStr.empty())
+        if (addrStr.empty() || dataStr.empty()) {
             continue;
-        size_t pos = dataStr.find(',');
-        if (pos != std::string::npos)
-            dataStr = dataStr.substr(0, pos);
+        }
+
+        // remove trailing comma
+        size_t commaPos = dataStr.find(',');
+        if (commaPos != std::string::npos) {
+            dataStr = dataStr.substr(0, commaPos);
+        }
+
         try {
             uint32_t address = std::stoul(addrStr, nullptr, 16);
-            uint32_t data = std::stoul(dataStr, nullptr, 16);
+            uint32_t word    = std::stoul(dataStr, nullptr, 16);
+
             if (address < 0x10000000) {
-                instrMemory[address] = data;
-            } else {
-                for (int i = 0; i < 4; i++) {
-                    dataSegment.memory[address + i] = (data >> (8 * i)) & 0xFF;
-                }
+                // instructions
+                instrMemory[address] = word;
             }
-        } catch (...) {
+            else if (address < 0x7FFFFFFF) {
+                // data
+                dataSegment.writeWord(address, static_cast<int32_t>(word));
+            }
+            else {
+                // stack
+                // (we'll treat address >= 0x7FFFFFFF as stack region)
+                stackSegment.writeWord(address, static_cast<int32_t>(word));
+            }
+        }
+        catch (...) {
             std::cerr << "Parsing error on line: " << line << "\n";
             continue;
         }
@@ -280,216 +340,280 @@ bool parseMCFile(const std::string &filename) {
 }
 
 // =====================================================================
-// Debug: Print Registers and Global CPU Registers
+// printRegisters
 // =====================================================================
 void printRegisters() {
     std::cout << "Register File:\n";
     for (int i = 0; i < NUM_REGS; i++) {
-        std::cout << "R[" << std::setw(2) << i << "] = " << std::setw(10)
-                  << R[i] << "   ";
-        if ((i + 1) % 4 == 0)
-            std::cout << "\n";
+        std::cout << "R[" << std::setw(2) << i << "]=" << R[i] << "   ";
+        if ((i+1)%4 == 0) std::cout << "\n";
     }
     std::cout << "-------------------------------------\n";
-    std::cout << "PC = 0x" << std::hex << PC << std::dec
-              << "  IR = 0x" << std::hex << IR << std::dec << "\n";
-    std::cout << "RA = " << RA << "  RB = " << RB << "  RM = " << RM << "\n";
-    std::cout << "RZ = " << RZ << "  RY = " << RY << "  MDR = " << MDR << "\n";
+    std::cout << "PC = 0x" << std::hex << PC
+              << "  IR = 0x" << IR << std::dec << "\n";
+    std::cout << "RA=" << RA << "  RB=" << RB << "  RM=" << RM << "\n";
+    std::cout << "RZ=" << RZ << "  RY=" << RY << "  MDR=" << MDR << "\n";
     std::cout << "===========================================\n";
 }
 
 // =====================================================================
-// Main Simulator Loop
+// getMemSegmentForAddress:
+//   Helper to figure out which segment an address belongs to.
+//   We will read/write from the correct segment in LOAD/STORE ops.
+// =====================================================================
+MemSegment* getMemSegmentForAddress(uint32_t addr) {
+    if (addr < 0x10000000) {
+        // For simplicity, let's assume we do NOT allow loads/stores to instruction memory
+        // But if you wanted self-modifying code, you'd handle it.
+        // We'll just return nullptr here to indicate invalid or unexpected.
+        return nullptr;
+    }
+    else if (addr < 0x7FFFFFFF) {
+        return &dataSegment;
+    }
+    else {
+        return &stackSegment;
+    }
+}
+
+// =====================================================================
+// main
 // =====================================================================
 int main(int argc, char* argv[]) {
-    std::cout << "RISC-V Simulator Starting...\n";
-   
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <input.mc>\n";
         return 1;
     }
-   
-    if (!parseMCFile(argv[1])) {
+
+    std::string inputFile = argv[1];
+    if (!parseInputMC(inputFile)) {
         return 1;
     }
-    dataSegment.loadFromFile(argv[1]);
-   
-    for (int i = 0; i < NUM_REGS; i++)
+
+    // Before cycle 0, dump initial contents to:
+    //   instruction.mc, data.mc, stack.mc
+    dumpInstructionMemoryToFile("instruction.mc");
+    dumpSegmentToFile("data.mc",  dataSegment,  0x10000000, 0x7FFFFFFF);
+    // We'll pick an upper bound just beyond 0x7FFFFFFF for stack
+    // to capture addresses >= 0x7FFFFFFF (but 0xFFFFFFFF is typical 32-bit max)
+    dumpSegmentToFile("stack.mc", stackSegment, 0x7FFFFFFF, 0xFFFFFFFF);
+
+    // Initialize registers
+    for (int i = 0; i < NUM_REGS; i++) {
         R[i] = 0;
+    }
     PC = 0;
-    clockCycle = 0;
-   
-    std::cout << "Initial state of registers:\n";
+    R[2] = 0x7FFFFFFF;         // x2 (sp) initialized to top of stack
+    PC = 0;
+
+    // Print initial register state
+    std::cout << "Initial state (before cycle 0):\n";
     printRegisters();
-   
-    // Prompt user for input
+
+    // Prompt user
     char userInput;
-    std::cout << "Enter N for next instruction, R for remaining output, E to exit: ";
+    std::cout << "Enter N for next, R for remainder, E to exit: ";
     std::cin >> userInput;
     if (userInput == 'E' || userInput == 'e') {
-        std::cout << "Exiting simulation as per user request.\n";
+        std::cout << "Exiting at user request.\n";
         return 0;
     }
-   
-    std::cout << "Beginning simulation...\n";
-    bool printRemaining = (userInput == 'R' || userInput == 'r');
+    bool runAllRemaining = (userInput == 'R' || userInput == 'r');
+
+    std::cout << "Starting simulation...\n";
+
     while (true) {
+        // Fetch
         std::cout << "Clock Cycle: " << clockCycle << "\n";
-       
-        if (instrMemory.find(PC) == instrMemory.end()) {
-            std::cout << "[Fetch] No instruction at PC = 0x" << std::hex << PC
-                      << ". Terminating simulation.\n";
+        auto it = instrMemory.find(PC);
+        if (it == instrMemory.end()) {
+            std::cout << "[Fetch] No instruction at PC=0x"
+                      << std::hex << PC << ". Exiting.\n";
             break;
         }
-        IR = instrMemory[PC];
-        std::cout << "[Fetch] PC = 0x" << std::hex << PC
-                  << " IR = 0x" << IR << std::dec << "\n";
-       
+        IR = it->second;
+        std::cout << "[Fetch] PC=0x" << std::hex << PC
+                  << " IR=0x" << IR << std::dec << "\n";
+
+        // Termination?
         if (isTerminationInstr(IR)) {
-            std::cout << "[Fetch] Termination instruction encountered. Exiting simulation.\n";
+            std::cout << "[Fetch] Encountered 0x00000000 => stop.\n";
             break;
         }
-       
+
+        // Decode
         DecodedInstr d = decode(IR);
         std::cout << "[Decode] opcode=0x" << std::hex << d.opcode
-                  << " rd=" << d.rd
-                  << " rs1=" << d.rs1
+                  << " rd=" << d.rd << " rs1=" << d.rs1
                   << " rs2=" << d.rs2
                   << " funct3=0x" << d.funct3
                   << " funct7=0x" << d.funct7
                   << " imm=" << std::dec << d.imm << "\n";
-       
-        // Operand Setup:
+
+        // Prepare operands
         RA = R[d.rs1];
-        // For I-type instructions, loads, stores, JALR, and LUI, set RB to the immediate.
-        if (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67 || d.opcode == 0x37 || d.opcode == 0x23) {
+        if (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67 ||
+            d.opcode == 0x37 || d.opcode == 0x23) {
+            // I-type, loads, JALR, LUI, store => RB=imm
             RB = d.imm;
-        } else if (d.opcode == 0x17) { // AUIPC
+        }
+        else if (d.opcode == 0x17) {
+            // AUIPC => RA=PC, RB=imm
             RA = PC;
             RB = d.imm;
-        } else {
+        }
+        else {
             RB = R[d.rs2];
         }
-        // RM holds the register file value from rs2 (used for stores).
         RM = R[d.rs2];
-       
+
         uint32_t nextPC = PC + 4;
         RZ = 0;
         RY = 0;
-       
+
+        // Execute
         switch (d.opcode) {
-            // R-type instructions.
+            // ---------------- R-type = 0x33
             case 0x33:
                 switch (d.funct3) {
                     case 0x0:
                         if (d.funct7 == 0x00) {
+                            // ADD
                             RZ = RA + RB;
-                            std::cout << "[Execute] ADD: " << RA << " + " << RB << " = " << RZ << "\n";
+                            std::cout << "[Execute] ADD: " << RA
+                                      << " + " << RB << " => " << RZ << "\n";
                         } else if (d.funct7 == 0x20) {
+                            // SUB
                             RZ = RA - RB;
-                            std::cout << "[Execute] SUB: " << RA << " - " << RB << " = " << RZ << "\n";
+                            std::cout << "[Execute] SUB: " << RA
+                                      << " - " << RB << " => " << RZ << "\n";
                         } else if (d.funct7 == 0x01) {
+                            // MUL
                             RZ = RA * RB;
-                            std::cout << "[Execute] MUL: " << RA << " * " << RB << " = " << RZ << "\n";
+                            std::cout << "[Execute] MUL: " << RA
+                                      << " * " << RB << " => " << RZ << "\n";
                         }
                         break;
                     case 0x4:
                         if (d.funct7 == 0x00) {
+                            // XOR
                             RZ = RA ^ RB;
-                            std::cout << "[Execute] XOR: " << RA << " ^ " << RB << " = " << RZ << "\n";
+                            std::cout << "[Execute] XOR: " << RA
+                                      << " ^ " << RB << " => " << RZ << "\n";
                         } else if (d.funct7 == 0x01) {
+                            // DIV
                             if (RB == 0) {
                                 RZ = 0;
-                                std::cout << "[Execute] DIV: Division by zero!\n";
+                                std::cout << "[Execute] DIV by zero!\n";
                             } else {
                                 RZ = RA / RB;
-                                std::cout << "[Execute] DIV: " << RA << " / " << RB << " = " << RZ << "\n";
+                                std::cout << "[Execute] DIV: " << RA
+                                          << "/" << RB << " => " << RZ << "\n";
                             }
                         }
                         break;
                     case 0x6:
                         if (d.funct7 == 0x00) {
+                            // OR
                             RZ = RA | RB;
-                            std::cout << "[Execute] OR: " << RA << " | " << RB << " = " << RZ << "\n";
+                            std::cout << "[Execute] OR: " << RA
+                                      << " | " << RB << " => " << RZ << "\n";
                         } else if (d.funct7 == 0x01) {
+                            // REM
                             if (RB == 0) {
                                 RZ = 0;
-                                std::cout << "[Execute] REM: Division by zero!\n";
+                                std::cout << "[Execute] REM by zero!\n";
                             } else {
                                 RZ = RA % RB;
-                                std::cout << "[Execute] REM: " << RA << " % " << RB << " = " << RZ << "\n";
+                                std::cout << "[Execute] REM: " << RA
+                                          << " % " << RB << " => " << RZ << "\n";
                             }
                         }
                         break;
                     case 0x7:
+                        // AND
                         RZ = RA & RB;
-                        std::cout << "[Execute] AND: " << RA << " & " << RB << " = " << RZ << "\n";
+                        std::cout << "[Execute] AND: " << RA
+                                  << " & " << RB << " => " << RZ << "\n";
                         break;
                     case 0x1: {
+                        // SLL
                         int shamt = RB & 0x1F;
                         RZ = RA << shamt;
-                        std::cout << "[Execute] SLL: " << RA << " << " << shamt << " = " << RZ << "\n";
+                        std::cout << "[Execute] SLL: " << RA
+                                  << " << " << shamt << " => " << RZ << "\n";
                     } break;
                     case 0x2:
+                        // SLT
                         RZ = (RA < RB) ? 1 : 0;
-                        std::cout << "[Execute] SLT: (" << RA << " < " << RB << ") = " << RZ << "\n";
+                        std::cout << "[Execute] SLT => " << RZ << "\n";
                         break;
                     case 0x5: {
+                        // SRL / SRA
                         int shamt = RB & 0x1F;
                         if (d.funct7 == 0x00) {
-                            RZ = ((uint32_t)RA) >> shamt;
-                            std::cout << "[Execute] SRL: " << RA << " >> " << shamt << " = " << RZ << "\n";
+                            RZ = static_cast<int32_t>(
+                                     static_cast<uint32_t>(RA) >> shamt);
+                            std::cout << "[Execute] SRL => " << RZ << "\n";
                         } else if (d.funct7 == 0x20) {
                             RZ = RA >> shamt;
-                            std::cout << "[Execute] SRA: " << RA << " >> " << shamt << " = " << RZ << "\n";
+                            std::cout << "[Execute] SRA => " << RZ << "\n";
                         }
-                        break;
-                    }
+                    } break;
                     default:
                         std::cout << "[Execute] Unimplemented R-type funct3\n";
                         break;
                 }
-                RY = RZ; // Write-back from ALU result for R-type.
+                RY = RZ;
                 break;
-            // I-type ALU instructions.
+
+            // ---------------- I-type ALU = 0x13
             case 0x13:
                 switch (d.funct3) {
                     case 0x0:
+                        // ADDI
                         RZ = RA + RB;
-                        std::cout << "[Execute] ADDI: " << RA << " + " << RB << " = " << RZ << "\n";
+                        std::cout << "[Execute] ADDI => " << RZ << "\n";
                         break;
                     case 0x7:
+                        // ANDI
                         RZ = RA & RB;
-                        std::cout << "[Execute] ANDI: " << RA << " & " << RB << " = " << RZ << "\n";
+                        std::cout << "[Execute] ANDI => " << RZ << "\n";
                         break;
                     case 0x6:
+                        // ORI
                         RZ = RA | RB;
-                        std::cout << "[Execute] ORI: " << RA << " | " << RB << " = " << RZ << "\n";
+                        std::cout << "[Execute] ORI => " << RZ << "\n";
                         break;
                     case 0x4:
+                        // XORI
                         RZ = RA ^ RB;
-                        std::cout << "[Execute] XORI: " << RA << " ^ " << RB << " = " << RZ << "\n";
+                        std::cout << "[Execute] XORI => " << RZ << "\n";
                         break;
                     case 0x2:
+                        // SLTI
                         RZ = (RA < RB) ? 1 : 0;
-                        std::cout << "[Execute] SLTI: (" << RA << " < " << RB << ") = " << RZ << "\n";
+                        std::cout << "[Execute] SLTI => " << RZ << "\n";
                         break;
                     case 0x1: {
+                        // SLLI
                         int shamt = RB & 0x1F;
                         RZ = RA << shamt;
-                        std::cout << "[Execute] SLLI: " << RA << " << " << shamt << " = " << RZ << "\n";
+                        std::cout << "[Execute] SLLI => " << RZ << "\n";
                     } break;
                     case 0x5: {
+                        // SRLI / SRAI
                         int shamt = RB & 0x1F;
                         int topBits = (RB >> 5) & 0x7F;
                         if (topBits == 0x00) {
-                            RZ = ((uint32_t)RA) >> shamt;
-                            std::cout << "[Execute] SRLI: " << RA << " >> " << shamt << " = " << RZ << "\n";
+                            // SRLI
+                            RZ = static_cast<int32_t>(
+                                     static_cast<uint32_t>(RA) >> shamt);
+                            std::cout << "[Execute] SRLI => " << RZ << "\n";
                         } else if (topBits == 0x20) {
+                            // SRAI
                             RZ = RA >> shamt;
-                            std::cout << "[Execute] SRAI: " << RA << " >> " << shamt << " = " << RZ << "\n";
-                        } else {
-                            std::cout << "[Execute] Unknown I-type shift extension.\n";
+                            std::cout << "[Execute] SRAI => " << RZ << "\n";
                         }
                     } break;
                     default:
@@ -498,198 +622,199 @@ int main(int argc, char* argv[]) {
                 }
                 RY = RZ;
                 break;
-            // I-type LOAD instructions.
+
+            // ---------------- LOAD = 0x03
             case 0x03: {
                 uint32_t addr = RA + d.imm;
-                RZ = addr; // Effective address stored in RZ.
+                MemSegment* seg = getMemSegmentForAddress(addr);
+                if (!seg) {
+                    std::cout << "[Execute] LOAD from invalid region! addr=0x"
+                              << std::hex << addr << std::dec << "\n";
+                    break;
+                }
+                RZ = addr;
                 switch (d.funct3) {
-                    case 0x0: {
-                        int8_t val = dataSegment.readByte(addr);
+                    case 0x0: { // LB
+                        int8_t val = seg->readByte(addr);
                         MDR = val;
                         RY = MDR;
-                        std::cout << "[Execute] LB: loaded byte " << (int)val
-                                  << " from 0x" << std::hex << addr << std::dec << "\n";
+                        std::cout << "[Execute] LB => " << (int)val << "\n";
                     } break;
-                    case 0x1: {
+                    case 0x1: { // LH
                         int16_t val = 0;
-                        for (int i = 0; i < 2; i++) {
-                            uint8_t b = 0;
-                            if (dataSegment.memory.find(addr + i) != dataSegment.memory.end())
-                                b = dataSegment.memory[addr + i];
-                            val |= (b << (8 * i));
-                        }
+                        val |= (seg->readByte(addr+0) & 0xFF);
+                        val |= (seg->readByte(addr+1) & 0xFF) << 8;
                         MDR = val;
                         RY = MDR;
-                        std::cout << "[Execute] LH: loaded halfword " << val
-                                  << " from 0x" << std::hex << addr << std::dec << "\n";
+                        std::cout << "[Execute] LH => " << val << "\n";
                     } break;
-                    case 0x2: {
-                        int32_t val = dataSegment.readWord(addr);
+                    case 0x2: { // LW
+                        int32_t val = seg->readWord(addr);
                         MDR = val;
                         RY = MDR;
-                        std::cout << "[Execute] LW: loaded word " << val
-                                  << " from 0x" << std::hex << addr << std::dec << "\n";
+                        std::cout << "[Execute] LW => " << val << "\n";
                     } break;
                     default:
-                        std::cout << "[Execute] Unimplemented LOAD funct3\n";
+                        std::cout << "[Execute] Unimplemented LOAD funct3.\n";
                         break;
                 }
-            }
-            break;
-            // S-type STORE instructions.
+            } break;
+
+            // ---------------- STORE = 0x23
             case 0x23: {
                 uint32_t addr = RA + d.imm;
-                RZ = addr; // Effective address stored in RZ.
+                MemSegment* seg = getMemSegmentForAddress(addr);
+                if (!seg) {
+                    std::cout << "[Execute] STORE to invalid region! addr=0x"
+                              << std::hex << addr << std::dec << "\n";
+                    break;
+                }
+                RZ = addr;
                 switch (d.funct3) {
-                    case 0x0: {
-                        int8_t toStore = (int8_t)(RM & 0xFF);
-                        dataSegment.writeByte(addr, toStore);
-                        std::cout << "[Execute] SB: store byte " << (int)toStore
-                                  << " to 0x" << std::hex << addr << std::dec << "\n";
+                    case 0x0: { // SB
+                        seg->writeByte(addr, static_cast<int8_t>(RM & 0xFF));
+                        std::cout << "[Execute] SB => " << (RM & 0xFF) << "\n";
                     } break;
-                    case 0x1: {
-                        int16_t toStore = (int16_t)(RM & 0xFFFF);
-                        for (int i = 0; i < 2; i++) {
-                            dataSegment.writeByte(addr + i, (toStore >> (8 * i)) & 0xFF);
-                        }
-                        std::cout << "[Execute] SH: store halfword " << toStore
-                                  << " to 0x" << std::hex << addr << std::dec << "\n";
+                    case 0x1: { // SH
+                        int16_t toStore = static_cast<int16_t>(RM & 0xFFFF);
+                        seg->writeByte(addr+0, (uint8_t)( toStore & 0xFF ));
+                        seg->writeByte(addr+1, (uint8_t)((toStore >> 8)&0xFF));
+                        std::cout << "[Execute] SH => " << toStore << "\n";
                     } break;
-                    case 0x2: {
-                        dataSegment.writeWord(addr, RM);
-                        std::cout << "[Execute] SW: store word " << RM
-                                  << " to 0x" << std::hex << addr << std::dec << "\n";
+                    case 0x2: { // SW
+                        seg->writeWord(addr, RM);
+                        std::cout << "[Execute] SW => " << RM << "\n";
                     } break;
                     default:
-                        std::cout << "[Execute] Unimplemented STORE funct3\n";
+                        std::cout << "[Execute] Unimplemented STORE funct3.\n";
                         break;
                 }
-            }
-            break;
-            // SB-type Branch instructions.
+            } break;
+
+            // ---------------- BRANCH = 0x63
             case 0x63: {
                 switch (d.funct3) {
-                    case 0x0:
+                    case 0x0: // BEQ
                         if (RA == RM) {
                             nextPC = PC + d.imm;
-                            std::cout << "[Execute] BEQ taken: new PC = 0x"
-                                      << std::hex << nextPC << std::dec << "\n";
+                            std::cout << "[Execute] BEQ => taken\n";
                         } else {
-                            std::cout << "[Execute] BEQ not taken.\n";
+                            std::cout << "[Execute] BEQ => not taken\n";
                         }
                         break;
-                    case 0x1:
+                    case 0x1: // BNE
                         if (RA != RM) {
                             nextPC = PC + d.imm;
-                            std::cout << "[Execute] BNE taken: new PC = 0x"
-                                      << std::hex << nextPC << std::dec << "\n";
+                            std::cout << "[Execute] BNE => taken\n";
                         } else {
-                            std::cout << "[Execute] BNE not taken.\n";
+                            std::cout << "[Execute] BNE => not taken\n";
                         }
                         break;
-                    case 0x4:
+                    case 0x4: // BLT
                         if (RA < RM) {
                             nextPC = PC + d.imm;
-                            std::cout << "[Execute] BLT taken: new PC = 0x"
-                                      << std::hex << nextPC << std::dec << "\n";
+                            std::cout << "[Execute] BLT => taken\n";
                         } else {
-                            std::cout << "[Execute] BLT not taken.\n";
+                            std::cout << "[Execute] BLT => not taken\n";
                         }
                         break;
-                    case 0x5:
+                    case 0x5: // BGE
                         if (RA >= RM) {
                             nextPC = PC + d.imm;
-                            std::cout << "[Execute] BGE taken: new PC = 0x"
-                                      << std::hex << nextPC << std::dec << "\n";
+                            std::cout << "[Execute] BGE => taken\n";
                         } else {
-                            std::cout << "[Execute] BGE not taken.\n";
+                            std::cout << "[Execute] BGE => not taken\n";
                         }
                         break;
                     default:
                         std::cout << "[Execute] Unimplemented branch funct3.\n";
                         break;
                 }
-            }
-            break;
-            // UJ-type: JAL
+            } break;
+
+            // ---------------- JAL = 0x6F
             case 0x6F: {
-                RZ = PC + 4; // Return address.
+                RZ = PC + 4;
                 nextPC = PC + d.imm;
-                std::cout << "[Execute] JAL: jump to 0x" << std::hex << nextPC
-                          << " and return address = 0x" << (PC + 4) << std::dec << "\n";
                 RY = RZ;
-            }
-            break;
-            // I-type: JALR
+                std::cout << "[Execute] JAL => nextPC=0x"
+                          << std::hex << nextPC << std::dec << "\n";
+            } break;
+
+            // ---------------- JALR = 0x67
             case 0x67: {
-                RZ = PC + 4; // Return address.
-                {
-                    uint32_t target = (uint32_t)((RA + d.imm) & ~1);
-                    nextPC = target;
-                    std::cout << "[Execute] JALR: jump to 0x" << std::hex << nextPC
-                              << " and return address = 0x" << (PC + 4) << std::dec << "\n";
-                }
+                RZ = PC + 4;
+                uint32_t target = (RA + d.imm) & ~1U;
+                nextPC = target;
                 RY = RZ;
-            }
-            break;
-            // U-type: LUI
+                std::cout << "[Execute] JALR => nextPC=0x"
+                          << std::hex << nextPC << std::dec << "\n";
+            } break;
+
+            // ---------------- LUI = 0x37
             case 0x37: {
                 RZ = d.imm;
-                std::cout << "[Execute] LUI: result = 0x" << std::hex << RZ << std::dec << "\n";
                 RY = RZ;
-            }
-            break;
-            // U-type: AUIPC
+                std::cout << "[Execute] LUI => " << RZ << "\n";
+            } break;
+
+            // ---------------- AUIPC = 0x17
             case 0x17: {
                 RZ = PC + d.imm;
-                std::cout << "[Execute] AUIPC: result = 0x" << std::hex << RZ << std::dec << "\n";
                 RY = RZ;
-            }
-            break;
+                std::cout << "[Execute] AUIPC => " << RZ << "\n";
+            } break;
+
             default:
-                std::cout << "[Execute] Unknown or unimplemented opcode: 0x"
+                std::cout << "[Execute] Unimplemented opcode=0x"
                           << std::hex << d.opcode << std::dec << "\n";
                 break;
         }
-       
-        // WRITEBACK Stage: Update destination register (if not x0) from RY.
+
+        // Writeback
         switch (d.opcode) {
             case 0x33: // R-type
             case 0x13: // I-type ALU
             case 0x17: // AUIPC
             case 0x37: // LUI
-            case 0x03: // LOAD instructions
+            case 0x03: // LOAD
             case 0x6F: // JAL
             case 0x67: // JALR
                 if (d.rd != 0) {
                     R[d.rd] = RY;
-                    std::cout << "[WB] R[" << d.rd << "] updated to " << R[d.rd] << "\n";
+                    std::cout << "[WB] R[" << d.rd << "] => " << R[d.rd] << "\n";
                 }
                 break;
             default:
+                // no WB for store/branch
                 break;
         }
-       
-        // Ensure register x0 remains 0.
-        R[0] = 0;
+
+        R[0] = 0; // x0 always 0
         PC = nextPC;
+
         printRegisters();
+
+        // After each cycle, update the 3 .mc files
+        dumpInstructionMemoryToFile("instruction.mc");
+        dumpSegmentToFile("data.mc",  dataSegment,  0x10000000, 0x7FFFFFFF);
+        dumpSegmentToFile("stack.mc", stackSegment, 0x7FFFFFFF, 0xFFFFFFFF);
+
         clockCycle++;
 
-        if (!printRemaining) {
-            // Prompt user for input
-            std::cout << "Enter N for next instruction, R for remaining output, E to exit: ";
+        // Prompt user if not running all
+        if (!runAllRemaining) {
+            std::cout << "Enter N=next, R=run remainder, E=exit: ";
             std::cin >> userInput;
             if (userInput == 'E' || userInput == 'e') {
-                std::cout << "Exiting simulation as per user request.\n";
+                std::cout << "Exiting at user request.\n";
                 break;
             } else if (userInput == 'R' || userInput == 'r') {
-                printRemaining = true;
+                runAllRemaining = true;
             }
         }
     }
-   
-    std::cout << "Simulation finished after " << clockCycle << " clock cycles.\n";
-    dataSegment.updateInputFile(argv[1]);
+
+    std::cout << "Simulation finished after " << clockCycle << " cycles.\n";
     return 0;
 }
