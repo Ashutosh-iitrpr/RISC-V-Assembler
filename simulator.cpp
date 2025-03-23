@@ -302,6 +302,7 @@ bool parseInputMC(const std::string &filename) {
         std::stringstream ss(line);
         std::string addrStr, dataStr;
         ss >> addrStr >> dataStr;
+        if (dataStr[0] == '<' || dataStr[0] == 't') continue;
         if (addrStr.empty() || dataStr.empty()) {
             continue;
         }
