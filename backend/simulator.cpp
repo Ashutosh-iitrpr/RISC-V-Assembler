@@ -680,7 +680,7 @@ int main(int argc, char* argv[]) {
                         std::cout << "[Execute] SH => " << toStore << "\n";
                     } break;
                     case 0x2: { // SW (Store Word)
-                        seg->writeWord(addr, RM); // ✅ Write exactly as before
+                        seg->writeWord(addr, RM); 
                         std::cout << "[Execute] SW => " << RM << " at addr=0x" 
                                 << std::hex << addr << std::dec << "\n";
                     } break;
