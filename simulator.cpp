@@ -14,7 +14,6 @@
 // =====================================================================
 static const int NUM_REGS = 32;
 int32_t R[NUM_REGS];       // Register file
-
 uint32_t PC = 0;           // Program Counter
 uint32_t IR = 0;           // Instruction Register
 int32_t  RA = 0;           // Operand A
@@ -81,9 +80,9 @@ MemSegment stackSegment;  // for addresses >= 0x7FFFFFFF
 //   - Only writes addresses actually stored in the memory map
 //   - Skips addresses outside the intended segment's range
 // =====================================================================
-void dumpSegmentToFile(const std::string &filename,
+void dumpSegmentToFile(const std::string &filename, 
                        const MemSegment &seg,
-                       uint32_t startAddr,
+                       uint32_t startAddr, 
                        uint32_t endAddr /* inclusive or exclusive? */)
 {
     // Open file for overwrite
@@ -132,7 +131,7 @@ void dumpSegmentToFile(const std::string &filename,
         // read the 32-bit word
         int32_t wordVal = seg.readWord(addr);
 
-        fout << std::hex << "0x"
+        fout << std::hex << "0x" 
              << std::setw(8) << std::setfill('0') << addr << "  0x"
              << std::setw(8) << std::setfill('0') << static_cast<uint32_t>(wordVal)
              << std::dec << "\n";
@@ -170,8 +169,8 @@ void dumpInstructionMemoryToFile(const std::string &filename) {
     for (auto addr : addresses) {
         // each entry is already a full 32-bit instruction
         uint32_t word = instrMemory[addr];
-        fout << std::hex
-             << "0x" << std::setw(8) << std::setfill('0') << addr
+        fout << std::hex 
+             << "0x" << std::setw(8) << std::setfill('0') << addr 
              << "  0x" << std::setw(8) << std::setfill('0') << word
              << std::dec << "\n";
     }
@@ -242,7 +241,7 @@ DecodedInstr decode(uint32_t instr) {
             uint32_t immBit11    = getBits(instr, 7, 7);
             uint32_t immBits10_5 = getBits(instr, 30, 25);
             uint32_t immBits4_1  = getBits(instr, 11, 8);
-            uint32_t immAll = (immBit12 << 12) | (immBit11 << 11)
+            uint32_t immAll = (immBit12 << 12) | (immBit11 << 11) 
                             | (immBits10_5 << 5) | (immBits4_1 << 1);
             d.imm = signExtend(immAll, 13);
         } break;
@@ -302,7 +301,7 @@ bool parseInputMC(const std::string &filename) {
         std::stringstream ss(line);
         std::string addrStr, dataStr;
         ss >> addrStr >> dataStr;
-        if (dataStr[0] == '<' || dataStr[0] == 't') continue;
+        if(dataStr[0] == '<' || dataStr[0] == 't')continue;
         if (addrStr.empty() || dataStr.empty()) {
             continue;
         }
@@ -350,7 +349,7 @@ void printRegisters() {
         if ((i+1)%4 == 0) std::cout << "\n";
     }
     std::cout << "-------------------------------------\n";
-    std::cout << "PC = 0x" << std::hex << PC
+    std::cout << "PC = 0x" << std::hex << PC 
               << "  IR = 0x" << IR << std::dec << "\n";
     std::cout << "RA=" << RA << "  RB=" << RB << "  RM=" << RM << "\n";
     std::cout << "RZ=" << RZ << "  RY=" << RY << "  MDR=" << MDR << "\n";
@@ -365,7 +364,7 @@ void printRegisters() {
 MemSegment* getMemSegmentForAddress(uint32_t addr) {
     if (addr < 0x10000000) {
         // For simplicity, let's assume we do NOT allow loads/stores to instruction memory
-        // But if you wanted self-modifying code, you'd handle it.
+        // But if you wanted self-modifying code, you'd handle it. 
         // We'll just return nullptr here to indicate invalid or unexpected.
         return nullptr;
     }
@@ -403,9 +402,9 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < NUM_REGS; i++) {
         R[i] = 0;
     }
+    R[2] = 0x7FFFFFFC; // stack pointer
     PC = 0;
-    R[2] = 0x7FFFFFFF;         // x2 (sp) initialized to top of stack
-    PC = 0;
+    clockCycle = 0;
 
     // Print initial register state
     std::cout << "Initial state (before cycle 0):\n";
@@ -428,12 +427,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Clock Cycle: " << clockCycle << "\n";
         auto it = instrMemory.find(PC);
         if (it == instrMemory.end()) {
-            std::cout << "[Fetch] No instruction at PC=0x"
+            std::cout << "[Fetch] No instruction at PC=0x" 
                       << std::hex << PC << ". Exiting.\n";
             break;
         }
         IR = it->second;
-        std::cout << "[Fetch] PC=0x" << std::hex << PC
+        std::cout << "[Fetch] PC=0x" << std::hex << PC 
                   << " IR=0x" << IR << std::dec << "\n";
 
         // Termination?
@@ -445,10 +444,10 @@ int main(int argc, char* argv[]) {
         // Decode
         DecodedInstr d = decode(IR);
         std::cout << "[Decode] opcode=0x" << std::hex << d.opcode
-                  << " rd=" << d.rd << " rs1=" << d.rs1
-                  << " rs2=" << d.rs2
+                  << " rd=" << d.rd << " rs1=" << d.rs1 
+                  << " rs2=" << d.rs2 
                   << " funct3=0x" << d.funct3
-                  << " funct7=0x" << d.funct7
+                  << " funct7=0x" << d.funct7 
                   << " imm=" << std::dec << d.imm << "\n";
 
         // Prepare operands
@@ -481,17 +480,17 @@ int main(int argc, char* argv[]) {
                         if (d.funct7 == 0x00) {
                             // ADD
                             RZ = RA + RB;
-                            std::cout << "[Execute] ADD: " << RA
+                            std::cout << "[Execute] ADD: " << RA 
                                       << " + " << RB << " => " << RZ << "\n";
                         } else if (d.funct7 == 0x20) {
                             // SUB
                             RZ = RA - RB;
-                            std::cout << "[Execute] SUB: " << RA
+                            std::cout << "[Execute] SUB: " << RA 
                                       << " - " << RB << " => " << RZ << "\n";
                         } else if (d.funct7 == 0x01) {
                             // MUL
                             RZ = RA * RB;
-                            std::cout << "[Execute] MUL: " << RA
+                            std::cout << "[Execute] MUL: " << RA 
                                       << " * " << RB << " => " << RZ << "\n";
                         }
                         break;
@@ -499,7 +498,7 @@ int main(int argc, char* argv[]) {
                         if (d.funct7 == 0x00) {
                             // XOR
                             RZ = RA ^ RB;
-                            std::cout << "[Execute] XOR: " << RA
+                            std::cout << "[Execute] XOR: " << RA 
                                       << " ^ " << RB << " => " << RZ << "\n";
                         } else if (d.funct7 == 0x01) {
                             // DIV
@@ -508,7 +507,7 @@ int main(int argc, char* argv[]) {
                                 std::cout << "[Execute] DIV by zero!\n";
                             } else {
                                 RZ = RA / RB;
-                                std::cout << "[Execute] DIV: " << RA
+                                std::cout << "[Execute] DIV: " << RA 
                                           << "/" << RB << " => " << RZ << "\n";
                             }
                         }
@@ -517,7 +516,7 @@ int main(int argc, char* argv[]) {
                         if (d.funct7 == 0x00) {
                             // OR
                             RZ = RA | RB;
-                            std::cout << "[Execute] OR: " << RA
+                            std::cout << "[Execute] OR: " << RA 
                                       << " | " << RB << " => " << RZ << "\n";
                         } else if (d.funct7 == 0x01) {
                             // REM
@@ -526,7 +525,7 @@ int main(int argc, char* argv[]) {
                                 std::cout << "[Execute] REM by zero!\n";
                             } else {
                                 RZ = RA % RB;
-                                std::cout << "[Execute] REM: " << RA
+                                std::cout << "[Execute] REM: " << RA 
                                           << " % " << RB << " => " << RZ << "\n";
                             }
                         }
@@ -534,14 +533,14 @@ int main(int argc, char* argv[]) {
                     case 0x7:
                         // AND
                         RZ = RA & RB;
-                        std::cout << "[Execute] AND: " << RA
+                        std::cout << "[Execute] AND: " << RA 
                                   << " & " << RB << " => " << RZ << "\n";
                         break;
                     case 0x1: {
                         // SLL
                         int shamt = RB & 0x1F;
                         RZ = RA << shamt;
-                        std::cout << "[Execute] SLL: " << RA
+                        std::cout << "[Execute] SLL: " << RA 
                                   << " << " << shamt << " => " << RZ << "\n";
                     } break;
                     case 0x2:
@@ -738,7 +737,7 @@ int main(int argc, char* argv[]) {
                 RZ = PC + 4;
                 nextPC = PC + d.imm;
                 RY = RZ;
-                std::cout << "[Execute] JAL => nextPC=0x"
+                std::cout << "[Execute] JAL => nextPC=0x" 
                           << std::hex << nextPC << std::dec << "\n";
             } break;
 
@@ -748,7 +747,7 @@ int main(int argc, char* argv[]) {
                 uint32_t target = (RA + d.imm) & ~1U;
                 nextPC = target;
                 RY = RZ;
-                std::cout << "[Execute] JALR => nextPC=0x"
+                std::cout << "[Execute] JALR => nextPC=0x" 
                           << std::hex << nextPC << std::dec << "\n";
             } break;
 
@@ -767,7 +766,7 @@ int main(int argc, char* argv[]) {
             } break;
 
             default:
-                std::cout << "[Execute] Unimplemented opcode=0x"
+                std::cout << "[Execute] Unimplemented opcode=0x" 
                           << std::hex << d.opcode << std::dec << "\n";
                 break;
         }
