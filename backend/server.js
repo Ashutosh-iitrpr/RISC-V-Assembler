@@ -11,11 +11,11 @@ const SIMULATOR_EXECUTABLE = "./simulator";
 let simulatorProcess = null;
 let latestRegisters = Array.from({ length: 32 }, (_, i) => ({ id: i, value: 0 }));
 let memoryData = { data: [], stack: [], instructions: [] };
-let simulatorLogs = []; // ✅ Store simulator logs
+let simulatorLogs = []; // Store simulator logs
 let executionComplete = false;
 
 
-// **1️⃣ Save input code & Start Simulator**
+// **Save input code & Start Simulator**
 app.post("/submit", (req, res) => {
     const code = req.body.code;
     console.log("\n[DEBUG] Received code submission:\n", code);
@@ -23,18 +23,18 @@ app.post("/submit", (req, res) => {
     fs.writeFileSync("input.mc", code);
     console.log("[DEBUG] Code saved to input.mc");
 
-    // ✅ Reset logs and execution state for new submission
+    //  Reset logs and execution state for new submission
     simulatorLogs = [];
     executionComplete = false;
 
-    // ✅ Terminate any existing simulator process before starting a new one
+    //  Terminate any existing simulator process before starting a new one
     if (simulatorProcess) {
         console.log("[DEBUG] Terminating existing simulator process...");
         simulatorProcess.kill(); 
         simulatorProcess = null;
     }
 
-    // ✅ Start a new simulator process
+    //  Start a new simulator process
     simulatorProcess = spawn(SIMULATOR_EXECUTABLE, ["input.mc", "data.mc", "stack.mc", "instruction.mc"], { stdio: ["pipe", "pipe", "pipe"] });
 
     simulatorProcess.stdout.on("data", (data) => {
@@ -44,13 +44,13 @@ app.post("/submit", (req, res) => {
         let outputLines = output.split("\n");
 
         outputLines.forEach(line => {
-            // ✅ If running "Run" (`R`), temporarily suppress register updates
+            //  If running "Run" (`R`), temporarily suppress register updates
             if (suppressRegisterUpdates && line.trim().startsWith("{") && line.trim().endsWith("}")) {
                 latestRegisters = JSON.parse(line.trim()).registers;
-                return; // 🚀 Do not print registers during "Run" mode
+                return; //  Do not print registers during "Run" mode
             }
 
-            // ✅ Store the final register values at the last step
+            // Store the final register values at the last step
             if (line.trim().startsWith("{") && line.trim().endsWith("}")) {
                 try {
                     const parsed = JSON.parse(line.trim());
@@ -68,7 +68,7 @@ app.post("/submit", (req, res) => {
                 }
             } else {
                 simulatorLogs.push(line);
-                if (simulatorLogs.length > 50) simulatorLogs.shift(); // ✅ Keep last 50 logs
+                if (simulatorLogs.length > 50) simulatorLogs.shift(); // Keep last 50 logs
             }
         });
     });
@@ -83,7 +83,7 @@ app.post("/submit", (req, res) => {
     simulatorProcess.on("close", () => {
         console.log("[DEBUG] Simulator process exited.");
         simulatorProcess = null;
-        executionComplete = true; // ✅ Mark execution as complete
+        executionComplete = true; // Mark execution as complete
     });
 
     readMemoryFiles();
@@ -91,15 +91,15 @@ app.post("/submit", (req, res) => {
 });
 
 
-// **2️⃣ New API Endpoint: Fetch Simulator Logs**
+// ** New API Endpoint: Fetch Simulator Logs**
 app.get("/logs", (req, res) => {
     const filteredLogs = simulatorLogs.filter(log => {
-        return !(log.startsWith("{") && log.endsWith("}")); // ✅ Exclude JSON logs
+        return !(log.startsWith("{") && log.endsWith("}")); // Exclude JSON logs
     });
     res.json({ logs: filteredLogs });
 });
 
-// **3️⃣ Read memory files**
+// **Read memory files**
 const readMemoryFiles = () => {
     console.log("\n[DEBUG] Reading memory files...");
 
@@ -127,12 +127,12 @@ const readMemoryFiles = () => {
     });
 };
 
-// **4️⃣ Handle execution commands ("N", "R", "E")**
-let suppressRegisterUpdates = false; // ✅ Prevent unnecessary register updates
+// **Handle execution commands ("N", "R", "E")**
+let suppressRegisterUpdates = false; // Prevent unnecessary register updates
 
 const checkExecutionStatus = () => {
     console.log("[DEBUG] Checking execution status...");
-    executionComplete = simulatorProcess === null; // ✅ Mark execution as complete when the process exits
+    executionComplete = simulatorProcess === null; // Mark execution as complete when the process exits
 };
 
 app.post("/control", (req, res) => {
@@ -150,7 +150,7 @@ app.post("/control", (req, res) => {
     }
 
     if (command === "R") {
-        suppressRegisterUpdates = true; // ✅ Suppress updates during "Run"
+        suppressRegisterUpdates = true; // Suppress updates during "Run"
     }
 
     simulatorProcess.stdin.write(command + "\n");
@@ -158,7 +158,7 @@ app.post("/control", (req, res) => {
     if (command === "N" || command === "E") {
         setTimeout(() => {
             readMemoryFiles();
-            fetchRegisters();  // ✅ Update registers immediately
+            fetchRegisters();  // Update registers immediately
             checkExecutionStatus();
         }, 500);
     } else if (command === "R") {
@@ -167,9 +167,9 @@ app.post("/control", (req, res) => {
             const data = await res.json();
             if (data.executionComplete) {
                 clearInterval(checkInterval);
-                suppressRegisterUpdates = false; // ✅ Re-enable register updates
-                readMemoryFiles(); // ✅ Ensure memory updates at the end
-                fetchRegisters(); // ✅ Send final registers to frontend
+                suppressRegisterUpdates = false; // Re-enable register updates
+                readMemoryFiles(); // Ensure memory updates at the end
+                fetchRegisters(); // Send final registers to frontend
                 checkExecutionStatus();
             }
         }, 500);
@@ -180,7 +180,7 @@ app.post("/control", (req, res) => {
 
 
 
-// **5️⃣ Fetch registers**
+// **Fetch registers**
 const fetchRegisters = () => {
     console.log("\n[DEBUG] Fetching latest register values...");
     
@@ -192,21 +192,21 @@ const fetchRegisters = () => {
     console.log("[DEBUG] Sending register values to frontend:\n", latestRegisters);
 };
 
-// ✅ Ensure `/registers` actually sends data
+// Ensure `/registers` actually sends data
 app.get("/registers", (req, res) => {
-    fetchRegisters();  // ✅ Fetch registers before sending
-    res.json({ registers: latestRegisters }); // ✅ Ensure data is sent
+    fetchRegisters();  // Fetch registers before sending
+    res.json({ registers: latestRegisters }); // Ensure data is sent
 });
 
-// **6️⃣ Fetch memory**
+// **Fetch memory**
 app.get("/memory", (req, res) => {
     console.log("\n[DEBUG] Sending memory data to frontend...");
     res.json(memoryData);
 });
 
-// **7️⃣ Fetch execution status**
+// **Fetch execution status**
 app.get("/execution-status", (req, res) => {
     res.json({ executionComplete });
 });
 
-app.listen(5000, () => console.log("\n🚀 Backend running on port 5000"));
+app.listen(5000, () => console.log("\nBackend running on port 5000"));
