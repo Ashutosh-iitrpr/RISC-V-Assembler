@@ -1,6 +1,6 @@
 import { Button } from "react-bootstrap";
 
-// ✅ Fix: Ensure the `executionComplete` prop is properly defined
+// Fix: Ensure the `executionComplete` prop is properly defined
 interface ControlsProps {
   onControl: (command: string) => void;
   executionComplete: boolean; 
