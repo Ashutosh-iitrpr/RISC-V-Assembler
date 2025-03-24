@@ -97,24 +97,24 @@ function App() {
     });
 
     if (command === "N" || command === "E") {
-        // ✅ If "Next" or "Exit", update immediately
+        // If "Next" or "Exit", update immediately
               setTimeout(() => {
                   fetchMemory();
                   fetchRegisters();
                   checkExecutionStatus();
               }, 500);
           } else if (command === "R") {
-              // ✅ If "Run", wait for execution to complete, then update once
+              // If "Run", wait for execution to complete, then update once
               let checkInterval = setInterval(async () => {
                   const res = await fetch("http://localhost:5000/execution-status");
                   const data = await res.json();
                   if (data.executionComplete) {
-                      clearInterval(checkInterval); // ✅ Stop checking once finished
+                      clearInterval(checkInterval); // Stop checking once finished
                       fetchMemory();
                       fetchRegisters();
                       checkExecutionStatus();
                   }
-              }, 500); // ✅ Check execution status every 500ms
+              }, 500); // Check execution status every 500ms
           }
       };
 
