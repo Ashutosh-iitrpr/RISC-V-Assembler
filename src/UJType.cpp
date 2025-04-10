@@ -3,12 +3,12 @@
 #include <sstream>
 
 uint32_t encodeUJType(uint8_t opcode, int rd, int32_t offsetBytes) {
-    int32_t offset = offsetBytes >> 1;
+    int32_t offset = offsetBytes >> 0;
     uint32_t imm = (uint32_t)offset & 0xFFFFF;
 
     uint32_t imm_20   = (imm >> 19) & 0x1;
     uint32_t imm_10_1 = (imm >>  1) & 0x3FF;
-    uint32_t imm_11   = (imm >>  0) & 0x1;
+    uint32_t imm_11   = (imm >>  10) & 0x1;
     uint32_t imm_19_12= (imm >> 11) & 0xFF;
 
     uint32_t insn = 0;
