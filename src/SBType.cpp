@@ -4,7 +4,7 @@
 
 uint32_t encodeSBType(uint8_t opcode, uint8_t func3,
                       int rs1, int rs2, int32_t branchOffsetBytes) {
-    int32_t offset = branchOffsetBytes >> 1;
+    int32_t offset = branchOffsetBytes >> 0;
     uint32_t imm12 = (uint32_t)offset & 0xFFF;
 
     uint32_t insn = 0;
