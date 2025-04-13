@@ -10,6 +10,27 @@
 #include <set>
 
 // =====================================================================
+// Add ALU operation types
+// =====================================================================
+enum ALUOpType {
+    ALU_ADD,
+    ALU_SUB,
+    ALU_MUL,
+    ALU_DIV,
+    ALU_REM,
+    ALU_AND,
+    ALU_OR,
+    ALU_XOR,
+    ALU_SLL,
+    ALU_SRL,
+    ALU_SRA,
+    ALU_SLT,
+    ALU_PASS, // Pass-through for LUI/AUIPC
+    ALU_EQ,   // Equality comparison (RA == RB)
+    ALU_GE    // Greater-than-or-equal comparison (RA >= RB)
+};
+
+// =====================================================================
 // Global CPU State
 // =====================================================================
 static const int NUM_REGS = 32;
@@ -22,8 +43,20 @@ int32_t  RM = 0;           // Used for store data
 int32_t  RZ = 0;           // ALU output
 int32_t  RY = 0;           // Write-back data
 int32_t  MDR= 0;           // Memory data register
+uint32_t MAR = 0;          // Memory Address Register
 
 uint64_t clockCycle = 0;   // Cycle counter
+
+// Global control signals
+bool regWrite = false;
+bool memRead = false;
+bool memWrite = false;
+bool branch = false;
+bool jump = false;
+uint8_t memToReg = 0; // 0: ALU result, 1: Memory, 2: PC+4
+uint8_t memSize = 2;  // 0: Byte, 1: Halfword, 2: Word
+bool memSignExtend = false;
+ALUOpType aluOp = ALU_PASS;
 
 // =====================================================================
 // Instruction Memory (< 0x10000000)
@@ -201,6 +234,18 @@ struct DecodedInstr {
     uint32_t funct3;
     uint32_t funct7;
     int32_t  imm;
+
+    // Control signals
+    bool regWrite;      // Enable register write
+    bool memRead;       // Enable memory read
+    bool memWrite;      // Enable memory write
+    bool branch;        // Enable branch
+    bool jump;          // Enable jump
+    ALUOpType aluOp;    // ALU operation type
+    uint8_t memToReg;   // Select memory or ALU result for write-back
+    uint8_t memSize;    // Memory access size: 0=byte, 1=halfword, 2=word
+    bool memSignExtend; // Sign-extend memory read data
+    bool zero;          // ALU zero signal (result is 0)
 };
 
 // =====================================================================
@@ -212,17 +257,22 @@ DecodedInstr decode(uint32_t instr) {
     d.rd     = getBits(instr, 11, 7);
     d.funct3 = getBits(instr, 14, 12);
     d.rs1    = getBits(instr, 19, 15);
+    d.rs2    = getBits(instr, 24, 20);
+    d.funct7 = getBits(instr, 31, 25);
 
-    // Some opcodes ignore rs2/funct7 in decode
-    if (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67) {
-        d.rs2 = 0;
-        d.funct7 = 0;
-    } else {
-        d.rs2    = getBits(instr, 24, 20);
-        d.funct7 = getBits(instr, 31, 25);
-    }
+    // Default control signals
+    d.regWrite = false;
+    d.memRead = false;
+    d.memWrite = false;
+    d.branch = false;
+    d.jump = false;
+    d.aluOp = ALU_PASS;
+    d.memToReg = 0;
+    d.memSize = 2; // Default to word
+    d.memSignExtend = false;
+    d.zero = false;
 
-    // decode immediate
+    // Decode immediate
     switch(d.opcode) {
         case 0x13: // I-type ALU
         case 0x03: // I-type LOAD
@@ -377,6 +427,212 @@ MemSegment* getMemSegmentForAddress(uint32_t addr) {
 }
 
 // =====================================================================
+// Instruction Address Generator (IAG)
+// =====================================================================
+class IAG {
+public:
+    uint32_t PCtemp; // Temporary storage for PC + 4
+
+    // Update PC based on signals
+    void updatePC(bool jump, bool branch, bool zero, int32_t offset, int32_t RZ) {
+        PCtemp = PC + 4; // Always store PC + 4 in PCtemp
+        if (jump) {
+            if (branch) {
+                PC += offset; // For JAL, PC = PC + offset
+            } else {
+                PC = RZ & ~1U; // For JALR, PC = RZ (aligned to even address)
+            }
+        } else if (branch && zero) {
+            PC += offset; // For branch, PC = PC + offset
+        } else {
+            PC = PCtemp; // Default to PC + 4
+        }
+    }
+};
+
+// Global IAG instance
+IAG iag;
+
+// =====================================================================
+// Control circuitry function
+// =====================================================================
+void controlCircuitry(uint32_t opcode, uint32_t funct3, uint32_t funct7) {
+    // Reset all control signals
+    regWrite = false;
+    memRead = false;
+    memWrite = false;
+    branch = false;
+    jump = false;
+    memToReg = 0;
+    memSize = 2; // Default to word
+    memSignExtend = false;
+    aluOp = ALU_PASS;
+
+    // Update control signals based on opcode, funct3, and funct7
+    switch (opcode) {
+        case 0x33: // R-type
+            regWrite = true;
+            switch (funct3) {
+                case 0x0:
+                    aluOp = (funct7 == 0x20) ? ALU_SUB : 
+                            (funct7 == 0x01) ? ALU_MUL : ALU_ADD;
+                    break;
+                case 0x4:
+                    aluOp = (funct7 == 0x01) ? ALU_DIV : ALU_XOR;
+                    break;
+                case 0x6:
+                    aluOp = (funct7 == 0x01) ? ALU_REM : ALU_OR;
+                    break;
+                case 0x7:
+                    aluOp = ALU_AND;
+                    break;
+                case 0x1:
+                    aluOp = ALU_SLL;
+                    break;
+                case 0x2:
+                    aluOp = ALU_SLT;
+                    break;
+                case 0x5:
+                    aluOp = (funct7 == 0x20) ? ALU_SRA : ALU_SRL;
+                    break;
+                default:
+                    break;
+            }
+            break;
+        case 0x13: // I-type ALU
+            regWrite = true;
+            switch (funct3) {
+                case 0x0:
+                    aluOp = ALU_ADD; // ADDI
+                    break;
+                case 0x7:
+                    aluOp = ALU_AND; // ANDI
+                    break;
+                case 0x6:
+                    aluOp = ALU_OR; // ORI
+                    break;
+                case 0x4:
+                    aluOp = ALU_XOR; // XORI
+                    break;
+                case 0x2:
+                    aluOp = ALU_SLT; // SLTI
+                    break;
+                case 0x1:
+                    aluOp = ALU_SLL; // SLLI
+                    break;
+                case 0x5:
+                    aluOp = ((funct7 & 0x20) == 0x20) ? ALU_SRA : ALU_SRL; // SRLI/SRAI
+                    break;
+                default:
+                    break;
+            }
+            break;
+        case 0x03: // LOAD
+            regWrite = true;
+            memRead = true;
+            aluOp = ALU_ADD; // Address calculation
+            memToReg = 1; // Write-back from memory
+            switch (funct3) {
+                case 0x0: memSize = 0; memSignExtend = true; break; // LB
+                case 0x1: memSize = 1; memSignExtend = true; break; // LH
+                case 0x2: memSize = 2; memSignExtend = false; break; // LW
+                case 0x4: memSize = 0; memSignExtend = false; break; // LBU
+                case 0x5: memSize = 1; memSignExtend = false; break; // LHU
+                default: break;
+            }
+            break;
+        case 0x23: // STORE
+            memWrite = true;
+            aluOp = ALU_ADD; // Address calculation
+            switch (funct3) {
+                case 0x0: memSize = 0; break; // SB
+                case 0x1: memSize = 1; break; // SH
+                case 0x2: memSize = 2; break; // SW
+                default: break;
+            }
+            break;
+        case 0x63: // BRANCH
+            branch = true;
+            switch (funct3) {
+                case 0x0: aluOp = ALU_SUB; break; // BEQ: RA - RB == 0
+                case 0x1: aluOp = ALU_EQ; break;  // BNE: RA == RB
+                case 0x4: aluOp = ALU_GE; break;  // BLT: RA >= RB
+                case 0x5: aluOp = ALU_SLT; break; // BGE: RA < RB
+                default: break;
+            }
+            break;
+        case 0x6F: // JAL
+            regWrite = true;
+            jump = true;
+            branch = true; // No branch for JAL
+            aluOp = ALU_PASS; // No ALU operation needed for JAL
+            memToReg = 2; // Write-back PC+4 (PCtemp from IAG)
+            break;
+        case 0x67: // JALR
+            regWrite = true;
+            jump = true;
+            aluOp = ALU_ADD; // Calculate new PC using ALU
+            memToReg = 2; // Write-back PC+4
+            break;
+        case 0x37: // LUI
+            regWrite = true;
+            aluOp = ALU_PASS; // Pass-through immediate
+            break;
+        case 0x17: // AUIPC
+            regWrite = true;
+            aluOp = ALU_ADD; // Add upper immediate to PC
+            break;
+        default:
+            break;
+    }
+}
+
+// =====================================================================
+// Memory Processor Interface
+// =====================================================================
+void memoryProcessorInterface(bool memRead, bool memWrite, uint8_t memSize) {
+    MemSegment* seg = getMemSegmentForAddress(MAR);
+    if (!seg) return; // Invalid memory segment
+
+    if (memRead) {
+        // Perform memory read based on size
+        switch (memSize) {
+            case 0: // Byte
+                MDR = memSignExtend ? static_cast<int8_t>(seg->readByte(MAR))
+                                    : static_cast<uint8_t>(seg->readByte(MAR));
+                break;
+            case 1: // Halfword
+                MDR = memSignExtend ? static_cast<int16_t>(seg->readByte(MAR) | (seg->readByte(MAR + 1) << 8))
+                                    : static_cast<uint16_t>(seg->readByte(MAR) | (seg->readByte(MAR + 1) << 8));
+                break;
+            case 2: // Word
+                MDR = seg->readWord(MAR);
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (memWrite) {
+        // Perform memory write based on size
+        switch (memSize) {
+            case 0: // Byte
+                seg->writeByte(MAR, RM & 0xFF);
+                break;
+            case 1: // Halfword
+                seg->writeByte(MAR, RM & 0xFF);
+                seg->writeByte(MAR + 1, (RM >> 8) & 0xFF);
+                break;
+            case 2: // Word
+                seg->writeWord(MAR, RM);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+// =====================================================================
 // main
 // =====================================================================
 int main(int argc, char* argv[]) {
@@ -450,348 +706,111 @@ int main(int argc, char* argv[]) {
                   << " funct7=0x" << d.funct7 
                   << " imm=" << std::dec << d.imm << "\n";
 
+        // Update control signals using control circuitry
+        controlCircuitry(d.opcode, d.funct3, d.funct7);
+
         // Prepare operands
         RA = R[d.rs1];
-        if (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67 ||
-            d.opcode == 0x37 || d.opcode == 0x23) {
-            // I-type, loads, JALR, LUI, store => RB=imm
-            RB = d.imm;
-        }
-        else if (d.opcode == 0x17) {
-            // AUIPC => RA=PC, RB=imm
-            RA = PC;
-            RB = d.imm;
-        }
-        else {
-            RB = R[d.rs2];
+        if (branch) { // Branch instructions
+            RB = R[d.rs2]; // rs2 goes to RB
+        } else { // Other instructions
+            RB = (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67 ||
+                  d.opcode == 0x37 || d.opcode == 0x23) ? d.imm : R[d.rs2];
         }
         RM = R[d.rs2];
 
-        uint32_t nextPC = PC + 4;
         RZ = 0;
         RY = 0;
 
         // Execute
-        switch (d.opcode) {
-            // ---------------- R-type = 0x33
-            case 0x33:
-                switch (d.funct3) {
-                    case 0x0:
-                        if (d.funct7 == 0x00) {
-                            // ADD
-                            RZ = RA + RB;
-                            std::cout << "[Execute] ADD: " << RA 
-                                      << " + " << RB << " => " << RZ << "\n";
-                        } else if (d.funct7 == 0x20) {
-                            // SUB
-                            RZ = RA - RB;
-                            std::cout << "[Execute] SUB: " << RA 
-                                      << " - " << RB << " => " << RZ << "\n";
-                        } else if (d.funct7 == 0x01) {
-                            // MUL
-                            RZ = RA * RB;
-                            std::cout << "[Execute] MUL: " << RA 
-                                      << " * " << RB << " => " << RZ << "\n";
-                        }
-                        break;
-                    case 0x4:
-                        if (d.funct7 == 0x00) {
-                            // XOR
-                            RZ = RA ^ RB;
-                            std::cout << "[Execute] XOR: " << RA 
-                                      << " ^ " << RB << " => " << RZ << "\n";
-                        } else if (d.funct7 == 0x01) {
-                            // DIV
-                            if (RB == 0) {
-                                RZ = 0;
-                                std::cout << "[Execute] DIV by zero!\n";
-                            } else {
-                                RZ = RA / RB;
-                                std::cout << "[Execute] DIV: " << RA 
-                                          << "/" << RB << " => " << RZ << "\n";
-                            }
-                        }
-                        break;
-                    case 0x6:
-                        if (d.funct7 == 0x00) {
-                            // OR
-                            RZ = RA | RB;
-                            std::cout << "[Execute] OR: " << RA 
-                                      << " | " << RB << " => " << RZ << "\n";
-                        } else if (d.funct7 == 0x01) {
-                            // REM
-                            if (RB == 0) {
-                                RZ = 0;
-                                std::cout << "[Execute] REM by zero!\n";
-                            } else {
-                                RZ = RA % RB;
-                                std::cout << "[Execute] REM: " << RA 
-                                          << " % " << RB << " => " << RZ << "\n";
-                            }
-                        }
-                        break;
-                    case 0x7:
-                        // AND
-                        RZ = RA & RB;
-                        std::cout << "[Execute] AND: " << RA 
-                                  << " & " << RB << " => " << RZ << "\n";
-                        break;
-                    case 0x1: {
-                        // SLL
-                        int shamt = RB & 0x1F;
-                        RZ = RA << shamt;
-                        std::cout << "[Execute] SLL: " << RA 
-                                  << " << " << shamt << " => " << RZ << "\n";
-                    } break;
-                    case 0x2:
-                        // SLT
-                        RZ = (RA < RB) ? 1 : 0;
-                        std::cout << "[Execute] SLT => " << RZ << "\n";
-                        break;
-                    case 0x5: {
-                        // SRL / SRA
-                        int shamt = RB & 0x1F;
-                        if (d.funct7 == 0x00) {
-                            RZ = static_cast<int32_t>(
-                                     static_cast<uint32_t>(RA) >> shamt);
-                            std::cout << "[Execute] SRL => " << RZ << "\n";
-                        } else if (d.funct7 == 0x20) {
-                            RZ = RA >> shamt;
-                            std::cout << "[Execute] SRA => " << RZ << "\n";
-                        }
-                    } break;
-                    default:
-                        std::cout << "[Execute] Unimplemented R-type funct3\n";
-                        break;
-                }
-                RY = RZ;
+        switch (aluOp) { // Use the global aluOp variable
+            case ALU_ADD:
+                RZ = RA + RB;
                 break;
-
-            // ---------------- I-type ALU = 0x13
-            case 0x13:
-                switch (d.funct3) {
-                    case 0x0:
-                        // ADDI
-                        RZ = RA + RB;
-                        std::cout << "[Execute] ADDI => " << RZ << "\n";
-                        break;
-                    case 0x7:
-                        // ANDI
-                        RZ = RA & RB;
-                        std::cout << "[Execute] ANDI => " << RZ << "\n";
-                        break;
-                    case 0x6:
-                        // ORI
-                        RZ = RA | RB;
-                        std::cout << "[Execute] ORI => " << RZ << "\n";
-                        break;
-                    case 0x4:
-                        // XORI
-                        RZ = RA ^ RB;
-                        std::cout << "[Execute] XORI => " << RZ << "\n";
-                        break;
-                    case 0x2:
-                        // SLTI
-                        RZ = (RA < RB) ? 1 : 0;
-                        std::cout << "[Execute] SLTI => " << RZ << "\n";
-                        break;
-                    case 0x1: {
-                        // SLLI
-                        int shamt = RB & 0x1F;
-                        RZ = RA << shamt;
-                        std::cout << "[Execute] SLLI => " << RZ << "\n";
-                    } break;
-                    case 0x5: {
-                        // SRLI / SRAI
-                        int shamt = RB & 0x1F;
-                        int topBits = (RB >> 5) & 0x7F;
-                        if (topBits == 0x00) {
-                            // SRLI
-                            RZ = static_cast<int32_t>(
-                                     static_cast<uint32_t>(RA) >> shamt);
-                            std::cout << "[Execute] SRLI => " << RZ << "\n";
-                        } else if (topBits == 0x20) {
-                            // SRAI
-                            RZ = RA >> shamt;
-                            std::cout << "[Execute] SRAI => " << RZ << "\n";
-                        }
-                    } break;
-                    default:
-                        std::cout << "[Execute] Unimplemented I-type funct3\n";
-                        break;
-                }
-                RY = RZ;
+            case ALU_SUB:
+                RZ = RA - RB;
                 break;
-
-            // ---------------- LOAD = 0x03
-            case 0x03: {
-                uint32_t addr = RA + d.imm;
-                MemSegment* seg = getMemSegmentForAddress(addr);
-                if (!seg) {
-                    std::cout << "[Execute] LOAD from invalid region! addr=0x"
-                              << std::hex << addr << std::dec << "\n";
-                    break;
+            case ALU_MUL:
+                RZ = RA * RB;
+                break;
+            case ALU_DIV:
+                if (RB == 0) {
+                    std::cerr << "[ERROR] Division by zero at PC=0x" 
+                              << std::hex << PC << std::dec << "\n";
+                    return 1; // Exit with error
                 }
-                RZ = addr;
-                switch (d.funct3) {
-                    case 0x0: { // LB
-                        int8_t val = seg->readByte(addr);
-                        MDR = val;
-                        RY = MDR;
-                        std::cout << "[Execute] LB => " << (int)val << "\n";
-                    } break;
-                    case 0x1: { // LH
-                        int16_t val = 0;
-                        val |= (seg->readByte(addr+0) & 0xFF);
-                        val |= (seg->readByte(addr+1) & 0xFF) << 8;
-                        MDR = val;
-                        RY = MDR;
-                        std::cout << "[Execute] LH => " << val << "\n";
-                    } break;
-                    case 0x2: { // LW
-                        int32_t val = seg->readWord(addr);
-                        MDR = val;
-                        RY = MDR;
-                        std::cout << "[Execute] LW => " << val << "\n";
-                    } break;
-                    default:
-                        std::cout << "[Execute] Unimplemented LOAD funct3.\n";
-                        break;
+                RZ = RA / RB;
+                break;
+            case ALU_REM:
+                if (RB == 0) {
+                    std::cerr << "[ERROR] Division by zero at PC=0x" 
+                              << std::hex << PC << std::dec << "\n";
+                    return 1; // Exit with error
                 }
-            } break;
-
-            // ---------------- STORE = 0x23
-            case 0x23: {
-                uint32_t addr = RA + d.imm;
-                MemSegment* seg = getMemSegmentForAddress(addr);
-                if (!seg) {
-                    std::cout << "[Execute] STORE to invalid region! addr=0x"
-                              << std::hex << addr << std::dec << "\n";
-                    break;
-                }
-                RZ = addr;
-                switch (d.funct3) {
-                    case 0x0: { // SB
-                        seg->writeByte(addr, static_cast<int8_t>(RM & 0xFF));
-                        std::cout << "[Execute] SB => " << (RM & 0xFF) << "\n";
-                    } break;
-                    case 0x1: { // SH
-                        int16_t toStore = static_cast<int16_t>(RM & 0xFFFF);
-                        seg->writeByte(addr+0, (uint8_t)( toStore & 0xFF ));
-                        seg->writeByte(addr+1, (uint8_t)((toStore >> 8)&0xFF));
-                        std::cout << "[Execute] SH => " << toStore << "\n";
-                    } break;
-                    case 0x2: { // SW
-                        seg->writeWord(addr, RM);
-                        std::cout << "[Execute] SW => " << RM << "\n";
-                    } break;
-                    default:
-                        std::cout << "[Execute] Unimplemented STORE funct3.\n";
-                        break;
-                }
-            } break;
-
-            // ---------------- BRANCH = 0x63
-            case 0x63: {
-                switch (d.funct3) {
-                    case 0x0: // BEQ
-                        if (RA == RM) {
-                            nextPC = PC + d.imm;
-                            std::cout << "[Execute] BEQ => taken\n";
-                        } else {
-                            std::cout << "[Execute] BEQ => not taken\n";
-                        }
-                        break;
-                    case 0x1: // BNE
-                        if (RA != RM) {
-                            nextPC = PC + d.imm;
-                            std::cout << "[Execute] BNE => taken\n";
-                        } else {
-                            std::cout << "[Execute] BNE => not taken\n";
-                        }
-                        break;
-                    case 0x4: // BLT
-                        if (RA < RM) {
-                            nextPC = PC + d.imm;
-                            std::cout << "[Execute] BLT => taken\n";
-                        } else {
-                            std::cout << "[Execute] BLT => not taken\n";
-                        }
-                        break;
-                    case 0x5: // BGE
-                        if (RA >= RM) {
-                            nextPC = PC + d.imm;
-                            std::cout << "[Execute] BGE => taken\n";
-                        } else {
-                            std::cout << "[Execute] BGE => not taken\n";
-                        }
-                        break;
-                    default:
-                        std::cout << "[Execute] Unimplemented branch funct3.\n";
-                        break;
-                }
-            } break;
-
-            // ---------------- JAL = 0x6F
-            case 0x6F: {
-                RZ = PC + 4;
-                nextPC = PC + d.imm;
-                RY = RZ;
-                std::cout << "[Execute] JAL => nextPC=0x" 
-                          << std::hex << nextPC << std::dec << "\n";
-            } break;
-
-            // ---------------- JALR = 0x67
-            case 0x67: {
-                RZ = PC + 4;
-                uint32_t target = (RA + d.imm) & ~1U;
-                nextPC = target;
-                RY = RZ;
-                std::cout << "[Execute] JALR => nextPC=0x" 
-                          << std::hex << nextPC << std::dec << "\n";
-            } break;
-
-            // ---------------- LUI = 0x37
-            case 0x37: {
-                RZ = d.imm;
-                RY = RZ;
-                std::cout << "[Execute] LUI => " << RZ << "\n";
-            } break;
-
-            // ---------------- AUIPC = 0x17
-            case 0x17: {
-                RZ = PC + d.imm;
-                RY = RZ;
-                std::cout << "[Execute] AUIPC => " << RZ << "\n";
-            } break;
-
+                RZ = RA % RB;
+                break;
+            case ALU_AND:
+                RZ = RA & RB;
+                break;
+            case ALU_OR:
+                RZ = RA | RB;
+                break;
+            case ALU_XOR:
+                RZ = RA ^ RB;
+                break;
+            case ALU_SLL:
+                RZ = RA << (RB & 0x1F);
+                break;
+            case ALU_SRL:
+                RZ = static_cast<int32_t>(static_cast<uint32_t>(RA) >> (RB & 0x1F));
+                break;
+            case ALU_SRA:
+                RZ = RA >> (RB & 0x1F);
+                break;
+            case ALU_SLT:
+                RZ = (RA < RB) ? 1 : 0;
+                break;
+            case ALU_EQ:
+                RZ = (RA == RB) ? 1 : 0; // Equality comparison
+                break;
+            case ALU_GE:
+                RZ = (RA >= RB) ? 1 : 0; // Greater-than-or-equal comparison
+                break;
+            case ALU_PASS:
+                RZ = RB; // Pass-through RB (immediate value is in RB)
+                break;
             default:
-                std::cout << "[Execute] Unimplemented opcode=0x" 
-                          << std::hex << d.opcode << std::dec << "\n";
                 break;
         }
 
-        // Writeback
-        switch (d.opcode) {
-            case 0x33: // R-type
-            case 0x13: // I-type ALU
-            case 0x17: // AUIPC
-            case 0x37: // LUI
-            case 0x03: // LOAD
-            case 0x6F: // JAL
-            case 0x67: // JALR
-                if (d.rd != 0) {
-                    R[d.rd] = RY;
-                    std::cout << "[WB] R[" << d.rd << "] => " << R[d.rd] << "\n";
-                }
-                break;
-            default:
-                // no WB for store/branch
-                break;
+        // Generate zero signal
+        d.zero = (RZ == 0);
+
+        // Update PC using IAG
+        iag.updatePC(jump, branch, d.zero, d.imm, RZ);
+
+        // Update MAR with the value of RZ
+        MAR = RZ;
+
+        // Memory Access using memoryProcessorInterface
+        memoryProcessorInterface(memRead, memWrite, memSize);
+
+        // Write-back
+        if (regWrite) {
+            // Determine the value of RY based on control signals
+            if (memToReg == 1) {
+                RY = MDR; // Load: Write-back from memory
+            } else if (memToReg == 2) {
+                RY = iag.PCtemp; // Jump: Write-back PC + 4
+            } else {
+                RY = RZ; // Default: Write-back ALU result
+            }
+
+            // Write-back to the destination register
+            R[d.rd] = RY;
         }
 
         R[0] = 0; // x0 always 0
-        PC = nextPC;
 
         printRegisters();
 
