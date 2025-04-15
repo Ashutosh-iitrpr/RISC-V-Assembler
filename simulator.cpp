@@ -248,6 +248,8 @@ struct DecodedInstr {
     bool zero;          // ALU zero signal (result is 0)
 };
 
+DecodedInstr d; // Make d a global variable to persist across states
+
 // =====================================================================
 // decode
 // =====================================================================
@@ -438,6 +440,8 @@ public:
         PCtemp = PC + 4; // Always store PC + 4 in PCtemp
         if (jump) {
             if (branch) {
+                std::cout << "current PC: " << std::hex << PC << std::dec << "\n";
+                std::cout << "branch offset: " << std::hex << offset << std::dec << "\n";
                 PC += offset; // For JAL, PC = PC + offset
             } else {
                 PC = RZ & ~1U; // For JALR, PC = RZ (aligned to even address)
@@ -633,6 +637,21 @@ void memoryProcessorInterface(bool memRead, bool memWrite, uint8_t memSize) {
 }
 
 // =====================================================================
+// Define states for the multi-cycle implementation
+// =====================================================================
+enum State {
+    FETCH,
+    DECODE,
+    EXECUTE,
+    MEMORY_ACCESS,
+    WRITE_BACK,
+    HALT
+};
+
+// Initialize the state machine
+State currentState = FETCH;
+
+// =====================================================================
 // main
 // =====================================================================
 int main(int argc, char* argv[]) {
@@ -646,15 +665,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Before cycle 0, dump initial contents to:
-    //   instruction.mc, data.mc, stack.mc
-    dumpInstructionMemoryToFile("instruction.mc");
-    dumpSegmentToFile("data.mc",  dataSegment,  0x10000000, 0x7FFFFFFF);
-    // We'll pick an upper bound just beyond 0x7FFFFFFF for stack
-    // to capture addresses >= 0x7FFFFFFF (but 0xFFFFFFFF is typical 32-bit max)
-    dumpSegmentToFile("stack.mc", stackSegment, 0x7FFFFFFF, 0xFFFFFFFF);
-
-    // Initialize registers
+    // Initialize registers and memory
     for (int i = 0; i < NUM_REGS; i++) {
         R[i] = 0;
     }
@@ -662,11 +673,16 @@ int main(int argc, char* argv[]) {
     PC = 0;
     clockCycle = 0;
 
+    // Dump initial contents to files
+    dumpInstructionMemoryToFile("instruction.mc");
+    dumpSegmentToFile("data.mc", dataSegment, 0x10000000, 0x7FFFFFFF);
+    dumpSegmentToFile("stack.mc", stackSegment, 0x7FFFFFFF, 0xFFFFFFFF);
+
     // Print initial register state
     std::cout << "Initial state (before cycle 0):\n";
     printRegisters();
 
-    // Prompt user
+    // Prompt user for control
     char userInput;
     std::cout << "Enter N for next, R for remainder, E to exit: ";
     std::cin >> userInput;
@@ -678,151 +694,186 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Starting simulation...\n";
 
-    while (true) {
-        // Fetch
+    while (currentState != HALT) {
         std::cout << "Clock Cycle: " << clockCycle << "\n";
-        auto it = instrMemory.find(PC);
-        if (it == instrMemory.end()) {
-            std::cout << "[Fetch] No instruction at PC=0x" 
-                      << std::hex << PC << ". Exiting.\n";
-            break;
-        }
-        IR = it->second;
-        std::cout << "[Fetch] PC=0x" << std::hex << PC 
-                  << " IR=0x" << IR << std::dec << "\n";
 
-        // Termination?
-        if (isTerminationInstr(IR)) {
-            std::cout << "[Fetch] Encountered 0x00000000 => stop.\n";
-            break;
-        }
-
-        // Decode
-        DecodedInstr d = decode(IR);
-        std::cout << "[Decode] opcode=0x" << std::hex << d.opcode
-                  << " rd=" << d.rd << " rs1=" << d.rs1 
-                  << " rs2=" << d.rs2 
-                  << " funct3=0x" << d.funct3
-                  << " funct7=0x" << d.funct7 
-                  << " imm=" << std::dec << d.imm << "\n";
-
-        // Update control signals using control circuitry
-        controlCircuitry(d.opcode, d.funct3, d.funct7);
-
-        // Prepare operands
-        RA = R[d.rs1];
-        if (branch) { // Branch instructions
-            RB = R[d.rs2]; // rs2 goes to RB
-        } else { // Other instructions
-            RB = (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67 ||
-                  d.opcode == 0x37 || d.opcode == 0x23) ? d.imm : R[d.rs2];
-        }
-        RM = R[d.rs2];
-
-        RZ = 0;
-        RY = 0;
-
-        // Execute
-        switch (aluOp) { // Use the global aluOp variable
-            case ALU_ADD:
-                RZ = RA + RB;
-                break;
-            case ALU_SUB:
-                RZ = RA - RB;
-                break;
-            case ALU_MUL:
-                RZ = RA * RB;
-                break;
-            case ALU_DIV:
-                if (RB == 0) {
-                    std::cerr << "[ERROR] Division by zero at PC=0x" 
-                              << std::hex << PC << std::dec << "\n";
-                    return 1; // Exit with error
+        switch (currentState) {
+            case FETCH: {
+                std::cout << "[Fetch] Current PC: 0x" << std::hex << PC << std::dec << "\n";
+                auto it = instrMemory.find(PC);
+                if (it == instrMemory.end()) {
+                    std::cout << "[Fetch] No instruction at PC=0x" 
+                              << std::hex << PC << ". Exiting.\n";
+                    currentState = HALT;
+                    break;
                 }
-                RZ = RA / RB;
-                break;
-            case ALU_REM:
-                if (RB == 0) {
-                    std::cerr << "[ERROR] Division by zero at PC=0x" 
-                              << std::hex << PC << std::dec << "\n";
-                    return 1; // Exit with error
+                IR = it->second;
+                std::cout << "[Fetch] PC=0x" << std::hex << PC 
+                          << " IR=0x" << IR << std::dec << "\n";
+
+                if (isTerminationInstr(IR)) {
+                    std::cout << "[Fetch] Encountered 0x00000000 => stop.\n";
+                    currentState = HALT;
+                } else {
+                    // PC += 4; // Increment PC by 4 unless explicitly modified
+                    currentState = DECODE;
                 }
-                RZ = RA % RB;
-                break;
-            case ALU_AND:
-                RZ = RA & RB;
-                break;
-            case ALU_OR:
-                RZ = RA | RB;
-                break;
-            case ALU_XOR:
-                RZ = RA ^ RB;
-                break;
-            case ALU_SLL:
-                RZ = RA << (RB & 0x1F);
-                break;
-            case ALU_SRL:
-                RZ = static_cast<int32_t>(static_cast<uint32_t>(RA) >> (RB & 0x1F));
-                break;
-            case ALU_SRA:
-                RZ = RA >> (RB & 0x1F);
-                break;
-            case ALU_SLT:
-                RZ = (RA < RB) ? 1 : 0;
-                break;
-            case ALU_EQ:
-                RZ = (RA == RB) ? 1 : 0; // Equality comparison
-                break;
-            case ALU_GE:
-                RZ = (RA >= RB) ? 1 : 0; // Greater-than-or-equal comparison
-                break;
-            case ALU_PASS:
-                RZ = RB; // Pass-through RB (immediate value is in RB)
-                break;
-            default:
+            } break;
+
+            case DECODE: {
+                std::cout << "[Decode] Current PC: 0x" << std::hex << PC << std::dec << "\n";
+                if (IR == 0) {
+                    std::cout << "[Decode] Nothing to perform.\n";
+                } else {
+                    d = decode(IR);
+                    std::cout << "[Decode] opcode=0x" << std::hex << d.opcode
+                              << " rd=" << d.rd << " rs1=" << d.rs1 
+                              << " rs2=" << d.rs2 
+                              << " funct3=0x" << d.funct3
+                              << " funct7=0x" << d.funct7 
+                              << " imm=" << std::dec << d.imm << "\n";
+
+                    controlCircuitry(d.opcode, d.funct3, d.funct7);
+
+                    RA = R[d.rs1];
+                    // Corrected logic for RB: Use immediate for I-type instructions, otherwise use rs2
+                    RB = (d.opcode == 0x13 || d.opcode == 0x03 || d.opcode == 0x67 || d.opcode == 0x23) ? d.imm : R[d.rs2];
+                    RM = R[d.rs2];
+                    std::cout << "[Decode] RA=" << RA << " RB=" << RB << " RM=" << RM << "\n";
+                }
+                currentState = EXECUTE;
+            } break;
+
+            case EXECUTE: {
+                std::cout << "[Execute] Current PC: 0x" << std::hex << PC << std::dec << "\n";
+                if (aluOp == ALU_PASS && !branch && !jump) {
+                    std::cout << "[Execute] Nothing to perform.\n";
+                } else {
+                    switch (aluOp) {
+                        case ALU_ADD:
+                            RZ = RA + RB;
+                            std::cout << "[Execute] ALU_ADD: " << RA << " + " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_SUB:
+                            RZ = RA - RB;
+                            std::cout << "[Execute] ALU_SUB: " << RA << " - " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_MUL:
+                            RZ = RA * RB;
+                            std::cout << "[Execute] ALU_MUL: " << RA << " * " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_DIV:
+                            RZ = (RB != 0) ? RA / RB : 0;
+                            std::cout << "[Execute] ALU_DIV: " << RA << " / " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_REM:
+                            RZ = (RB != 0) ? RA % RB : 0;
+                            std::cout << "[Execute] ALU_REM: " << RA << " % " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_AND:
+                            RZ = RA & RB;
+                            std::cout << "[Execute] ALU_AND: " << RA << " & " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_OR:
+                            RZ = RA | RB;
+                            std::cout << "[Execute] ALU_OR: " << RA << " | " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_XOR:
+                            RZ = RA ^ RB;
+                            std::cout << "[Execute] ALU_XOR: " << RA << " ^ " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_SLL:
+                            RZ = RA << (RB & 0x1F);
+                            std::cout << "[Execute] ALU_SLL: " << RA << " << " << (RB & 0x1F) << " = " << RZ << "\n";
+                            break;
+                        case ALU_SRL:
+                            RZ = static_cast<int32_t>(static_cast<uint32_t>(RA) >> (RB & 0x1F));
+                            std::cout << "[Execute] ALU_SRL: " << RA << " >> " << (RB & 0x1F) << " = " << RZ << "\n";
+                            break;
+                        case ALU_SRA:
+                            RZ = RA >> (RB & 0x1F);
+                            std::cout << "[Execute] ALU_SRA: " << RA << " >> " << (RB & 0x1F) << " (arithmetic) = " << RZ << "\n";
+                            break;
+                        case ALU_SLT:
+                            RZ = (RA < RB) ? 1 : 0;
+                            std::cout << "[Execute] ALU_SLT: " << RA << " < " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_EQ:
+                            RZ = (RA == RB) ? 1 : 0;
+                            std::cout << "[Execute] ALU_EQ: " << RA << " == " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_GE:
+                            RZ = (RA >= RB) ? 1 : 0;
+                            std::cout << "[Execute] ALU_GE: " << RA << " >= " << RB << " = " << RZ << "\n";
+                            break;
+                        case ALU_PASS:
+                            RZ = RB;
+                            std::cout << "[Execute] ALU_PASS: Passing " << RB << " as RZ = " << RZ << "\n";
+                            break;
+                        default:
+                            std::cout << "[Execute] Unknown ALU operation.\n";
+                            break;
+                    }
+
+                    d.zero = (RZ == 0);
+                    if (branch || jump) {
+                        std::cout << "[Execute] Branch or jump detected. Delaying PC update to WRITE_BACK stage.\n";
+                    }
+                    MAR = RZ;
+                    std::cout << "[Execute] RZ=" << RZ << "\n";
+                }
+                currentState = MEMORY_ACCESS;
+            } break;
+
+            case MEMORY_ACCESS: {
+                std::cout << "[Memory Access] Current PC: 0x" << std::hex << PC << std::dec << "\n";
+                if (!memRead && !memWrite) {
+                    std::cout << "[Memory Access] Nothing to perform.\n";
+                } else {
+                    std::cout << "[Memory Access] Accessing memory for load/store operations.\n";
+                    memoryProcessorInterface(memRead, memWrite, memSize);
+                    std::cout << "[Memory Access] MAR=" << MAR << " MDR=" << MDR << "\n";
+                }
+                currentState = WRITE_BACK;
+            } break;
+
+            case WRITE_BACK: {
+                std::cout << "[Write Back] Current PC: 0x" << std::hex << PC << std::dec << "\n";
+                iag.updatePC(jump, branch, d.zero, d.imm, RZ);
+                if (!regWrite) {
+                    std::cout << "[Write Back] Nothing to perform.\n";
+                } else {
+                    std::cout << "[Write Back] Writing results back to the register file.\n";
+                    if (memToReg == 1) {
+                        RY = MDR;
+                    } else if (memToReg == 2) {
+                        RY = iag.PCtemp;
+                    } else {
+                        RY = RZ;
+                    }
+                    R[d.rd] = RY;
+                    std::cout << "[Write Back] RY=" << RY << "\n";
+                }
+                R[0] = 0; // x0 always 0
+
+                printRegisters();
+
+                // Update memory dumps
+                dumpInstructionMemoryToFile("instruction.mc");
+                dumpSegmentToFile("data.mc", dataSegment, 0x10000000, 0x7FFFFFFF);
+                dumpSegmentToFile("stack.mc", stackSegment, 0x7FFFFFFF, 0xFFFFFFFF);
+
+                currentState = FETCH;
+            } break;
+
+            case HALT:
                 break;
         }
-
-        // Generate zero signal
-        d.zero = (RZ == 0);
-
-        // Update PC using IAG
-        iag.updatePC(jump, branch, d.zero, d.imm, RZ);
-
-        // Update MAR with the value of RZ
-        MAR = RZ;
-
-        // Memory Access using memoryProcessorInterface
-        memoryProcessorInterface(memRead, memWrite, memSize);
-
-        // Write-back
-        if (regWrite) {
-            // Determine the value of RY based on control signals
-            if (memToReg == 1) {
-                RY = MDR; // Load: Write-back from memory
-            } else if (memToReg == 2) {
-                RY = iag.PCtemp; // Jump: Write-back PC + 4
-            } else {
-                RY = RZ; // Default: Write-back ALU result
-            }
-
-            // Write-back to the destination register
-            R[d.rd] = RY;
-        }
-
-        R[0] = 0; // x0 always 0
-
-        printRegisters();
-
-        // After each cycle, update the 3 .mc files
-        dumpInstructionMemoryToFile("instruction.mc");
-        dumpSegmentToFile("data.mc",  dataSegment,  0x10000000, 0x7FFFFFFF);
-        dumpSegmentToFile("stack.mc", stackSegment, 0x7FFFFFFF, 0xFFFFFFFF);
 
         clockCycle++;
 
-        // Prompt user if not running all
-        if (!runAllRemaining) {
+        // Prompt user if not running all remaining cycles
+        if (!runAllRemaining && currentState != HALT) {
             std::cout << "Enter N=next, R=run remainder, E=exit: ";
             std::cin >> userInput;
             if (userInput == 'E' || userInput == 'e') {
