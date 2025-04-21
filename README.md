@@ -2,23 +2,22 @@
 
 ## Overview
 
-This project consists of two phases:
+This project consists of three phases:
 
 1. **Phase 1 (Assembler)**: Converts RISC-V assembly code (`input.asm`) into machine code (`output.mc`).
-2. **Phase 2 (Simulator)**: Implements a functional simulator that executes machine code (`output.mc`) step-by-step, following the RISC-V 32-bit instruction execution pipeline.
+2. **Phase 2 (Simulator)**: Implements a functional simulator that executes machine code (`output.mc`) step-by-step, following the RISC-V 32-bit pipeline.
+3. **Phase 3 (Pipelining)**: Enhances the simulator with a five-stage pipeline model, data hazard detection, stalling, and optional branching support (without data forwarding).
 
 ---
 
 ## Phase 1: Assembler
 
-The assembler reads an assembly source file (`input.asm`) and produces a machine code output file (`output.mc`) that contains:
+The assembler reads an assembly source file (`input.asm`) and produces a machine code output file (`output.mc`) containing:
 
 - **Code Segment**: Each instruction’s address, machine code in hex, and a bit-field breakdown comment.
 - **Data Segment**: Initial memory contents defined by directives (e.g., `.data`, `.byte`, `.word`).
 
 ### Supported Instructions
-The assembler supports the following **RISC-V instructions**:
-
 - **R-type**: `add, sub, and, or, xor, sll, srl, sra, slt, mul, div, rem`
 - **I-type**: `addi, andi, ori, lb, lh, lw, ld, jalr`
 - **S-type**: `sb, sh, sw, sd`
@@ -26,169 +25,108 @@ The assembler supports the following **RISC-V instructions**:
 - **U-type**: `lui, auipc`
 - **UJ-type**: `jal`
 
-### Assembler Directives
-- `.text`, `.data`
-- `.byte`, `.half`, `.word`, `.dword`, `.asciz`
+### Directives
+- Section: `.text`, `.data`
+- Data: `.byte`, `.half`, `.word`, `.dword`, `.asciz`
 
 ---
 
-## Phase 2: Simulator
+## Phase 2: Simulator (Functional)
 
-The simulator reads `output.mc` (generated from Phase 1) and executes instructions using a **five-stage pipeline execution model**:
+The simulator reads `output.mc` and executes instructions via a **five-stage pipeline model**:
 
-1. **Fetch**: Reads the next instruction using the program counter (`PC`).
-2. **Decode**: Decodes the instruction into opcode, registers, and immediate values.
-3. **Execute**: Performs the ALU operation (addition, subtraction, bitwise operations, etc.).
-4. **Memory Access**: Loads/stores values from/to memory.
-5. **Register Writeback**: Writes the result back to the destination register.
+1. **Fetch**: Reads the next instruction using the program counter (PC).
+2. **Decode**: Decodes opcode, registers, and immediates.
+3. **Execute**: Performs ALU operations.
+4. **Memory Access**: Loads from or stores to data memory.
+5. **Writeback**: Writes results to the destination register.
 
-Each instruction execution updates **registers, memory, and PC**, and provides detailed messages at each stage.
+### Features
+- **Clock Cycle Tracking**: Increments a clock variable per instruction.
+- **Step-by-Step & Run Modes**: Execute one instruction (`N`) or run all (`R`).
+- **Memory Dumps**: Updates `data.mc`, `stack.mc`, and `instruction.mc` after each run.
+- **Exit Instruction**: Halts simulation and dumps final state.
 
-### New Features in Phase 2
-✅ **Clock Cycle Tracking**: The simulator introduces a clock variable that increments for every instruction executed.  
-✅ **Step-by-Step Execution**: Users can execute instructions one by one (`Next`) or run the entire program (`Run`).  
-✅ **GUI Integration**: A frontend displays register values, memory state, and output logs dynamically.  
-✅ **Memory Dumping**: The simulator updates `data.mc`, `stack.mc`, and `instruction.mc` after every execution.  
-✅ **Exit Instruction**: A special instruction stops execution and dumps the final memory state.  
+---
+
+## Phase 3: Pipelining
+
+This phase augments the functional simulator with pipeline control:
+
+- **Five-Stage Pipeline**: IF, ID, EX, MEM, WB stages operate concurrently.
+- **Data Hazard Detection**: Checks RAW hazards in ID against EX and MEM stages.
+- **Stalling**: Freezes IF/ID and PC when hazards occur, injects bubbles in ID/EX.
+- **Control Hazard Handling**: Detects branches/jumps in ID, stalls until EX, flushes wrong-path instructions, and updates PC via `PC_src` multiplexer.
+- **Jump & Branch Control**: JAL/JALR flush immediately; branches wait for EX resolution.
+- **No Data Forwarding**: Pipeline stalls only, no bypass paths.
+- **Valid Bits and Enable Signals**: Each pipeline buffer tracks instruction validity; logic disables write when stalling.
+- **Knob-Based Switching**: A `wrapper.cpp` file contains a hardcoded `knob1` flag to switch between unpipelined and pipelined modes.
+
+### Key Signals and Behavior
+- **stall_IF / stall_ID**: Freeze PC and IF/ID on hazard detection.
+- **flush_IFID / flush_IDEX**: Clear pipeline registers to insert bubbles.
+- **PC_src**: Select source for PC (sequential, branch, JAL, or JALR).
+- **write_enable_PC**: Controls whether PC is updated in a cycle.
+- **write_enable_IFID**: Blocks IF/ID stage during stall.
+- **write_enable_IDEX**: Prevents advancing invalid instruction.
+
+### Instruction Lifecycle Example (With Branch)
+```text
+Cycle 1: Fetch I1
+Cycle 2: Fetch I2, Decode I1
+Cycle 3: Fetch I3, Decode I2, Execute I1 (branch result ready)
+Cycle 4: If branch taken, flush I2/I3, inject bubble in ID/EX
+Cycle 5: Fetch from new PC
+```
 
 ---
 
 ## File Structure
 
 ```
-📂 RISC-V-Assembler
-│── 📂 backend/              # Backend (Simulator)
-│   │── server.js           # Node.js backend to communicate with frontend
-│   │── simulator.cpp       # RISC-V functional simulator
-│   │── package.json        # Dependencies for backend
+├── backend/
+│   ├── assembler/           # Phase 1 assembler code (C++)
+│   └── common/              # Shared helper code
+├── frontend/               # GUI for visualization
 │   └── ...
-│
-│── 📂 frontend/             # Frontend (GUI)
-│   │── src/                # React application source code
-│   │── App.tsx             # Main frontend component
-│   │── package.json        # Dependencies for frontend
-│   └── ...
-│
-│── input.asm               # Sample assembly input
-│── output.mc               # Assembler-generated machine code
-│── data.mc                 # Data segment memory dump
-│── stack.mc                # Stack segment memory dump
-│── instruction.mc          # Instruction memory dump
-│── README.md               # This file
+├── simulator_pip.cpp        # Pipelined simulator (Phase 3)
+├── simulator_unpip.cpp      # Functional simulator (unpipelined, Phase 2)
+├── wrapper.cpp              # Dispatcher
+├── input.asm               # Sample assembly input (Phase 1)
+├── output.mc               # Machine code for simulator
+├── data.mc                 # Data memory dump
+├── stack.mc                # Stack memory dump
+├── instruction.mc          # Instruction memory dump
+└── README.md               # This documentation
 ```
 
 ---
 
-## Build & Execution
+## Build & Run
 
-### Running the Assembler (Phase 1)
-1. Open a terminal and navigate to the project directory.
-2. Compile the assembler:
-   ```
-   g++ -std=c++11 -Iinclude src/*.cpp -o assembler
-   ```
-3. Run the assembler:
-   ```
-   ./assembler
-   ```
-   This converts `input.asm` into `output.mc`.
-
----
-
-### Running the Simulator (Phase 2)
-#### 1️⃣ **Option 1: CLI Mode**
-Run the simulator using:
+### Phase 1: Assembler
+```bash
+# Build
+g++ -std=c++11 assembler/*.cpp -Iinclude -o assembler
+# Run
+./assembler input.asm output.mc
 ```
-g++ simulator.cpp -o simulator
+
+### Phase 2 & 3: Simulator
+```bash
+# Build
+g++ -std=c++17 wrapper.cpp simulator_unpip.cpp simulator_pip.cpp -o simulator
+# Run
 ./simulator input.mc data.mc stack.mc instruction.mc
 ```
-- Enter **`N`** to execute the next instruction step-by-step.
-- Enter **`R`** to execute all remaining instructions at once.
-- Enter **`E`** to exit the simulation.
 
 ---
 
-#### 2️⃣ **Option 2: GUI Mode**
-The GUI provides an interactive way to run and visualize the simulation.
+## Contact & Authors
 
-📌 **Setup:**
-1. Install backend dependencies:
-   ```
-   cd backend
-   npm install
-   ```
-2. Install frontend dependencies:
-   ```
-   cd ../frontend
-   npm install
-   ```
-3. Start the backend server:
-   ```
-   cd ../backend
-   node server.js
-   ```
-4. Start the frontend application:
-   ```
-   cd ../frontend
-   npm start
-   ```
+- **Ashutosh Rajput** – 2023csb1289@iitrpr.ac.in
+- **Aryan Sodhi**      – 2023csb1288@iitrpr.ac.in
+- **Bhavya Rao**       – 2023csb1291@iitrpr.ac.in
 
----
-
-## Usage
-
-1. Write RISC-V assembly code in `input.asm`:
-   ```assembly
-   .data
-   arrayA: .byte 10,20,30,40
-   arrayB: .word 0xDEADBEEF
-
-   .text
-   main:
-       addi x1, x0, 5
-       beq x1, x0, end
-       add x0, x0, x0
-   end:
-       jal x0, end
-   ```
-
-2. Run the assembler and simulator.
-
-3. The **GUI** displays:
-   - **Registers** (x0-x31)
-   - **Data & Stack Memory**
-   - **Execution Logs** (showing each step: Fetch, Decode, Execute, Memory, WB)
-
----
-
-## Supported Syntax & Limitations
-
-✔️ **Supported Instruction Formats**
-- **R-type**: `add x1, x2, x3`
-- **I-type**: `addi x1, x2, 10`, `lb x10, 0(x2)`, `jalr x1, 0(x5)`
-- **S-type**: `sb x6, 4(x7)`
-- **SB-type**: `beq x1, x2, label`
-- **U-type**: `lui x5, 0x12345`, `auipc x6, 0xABCD`
-- **UJ-type**: `jal x1, label`
-
-❌ **Known Limitations**
-- **Pseudoinstructions (e.g., li, mv) are NOT supported**.
-- **Floating-point instructions are NOT implemented**.
-- **Branch and jump offsets** are computed based on `PC + 4`.
-- **Runtime memory updates are NOT simulated beyond store/load operations**.
-
----
-
-## Contact & Support
-
-For any issues, contributions, or queries, contact:
-
-📩 **Developers:**
-- **Ashutosh Rajput** – *2023csb1289@iitrpr.ac.in*
-- **Aryan Sodhi** – *2023csb1288@iitrpr.ac.in*
-- **Bhavya Rao** – *2023csb1291@iitrpr.ac.in*
-
----
-
-This README now includes Phase 2, explaining the simulator features, execution process, and GUI integration. 🚀
+Feel free to contribute, report issues, or suggest improvements!
 
