@@ -12,6 +12,7 @@
 // =====================================================================
 // Add ALU operation types
 // =====================================================================
+namespace unpipelined {
 enum ALUOpType {
     ALU_ADD,
     ALU_SUB,
@@ -667,7 +668,7 @@ State currentState = FETCH;
 // =====================================================================
 // main
 // =====================================================================
-int main(int argc, char* argv[]) {
+int simulate(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <input.mc>\n";
         return 1;
@@ -929,4 +930,5 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Simulation finished after " << clockCycle << " cycles.\n";
     return 0;
+}
 }
