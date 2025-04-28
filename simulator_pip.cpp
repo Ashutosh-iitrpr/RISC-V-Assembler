@@ -626,7 +626,7 @@ bool parseInputMC(const std::string &filename) {
                 // instructions
                 instrMemory[address] = word;
             }
-            else if (address < 0x7FFFFFFF) {
+            else if (address < 0x50000000) {
                 // data
                 dataSegment.writeWord(address, static_cast<int32_t>(word));
             }
@@ -701,6 +701,7 @@ void memoryProcessorInterface(uint32_t &MAR, int32_t &MDR, int32_t RM, bool memR
 // Branch Prediction Table (1-bit predictor)
 // =====================================================================
 std::unordered_map<uint32_t, bool> branchPredictionTable; // Maps PC to prediction (true = taken, false = not taken)
+std::unordered_map<uint32_t, uint32_t> branchTargetTable; // Maps PC to target address
 
 // Function to predict branch outcome
 bool predictBranch(uint32_t pc) {
@@ -711,6 +712,11 @@ bool predictBranch(uint32_t pc) {
 // Function to update branch prediction table
 void updateBranchPrediction(uint32_t pc, bool actualOutcome) {
     branchPredictionTable[pc] = actualOutcome; // Update prediction with actual outcome
+}
+
+// Function to update branch target table
+void updateBranchTarget(uint32_t pc, uint32_t target) {
+    branchTargetTable[pc] = target; // Update target address for the branch
 }
 
 // =====================================================================
@@ -773,7 +779,7 @@ MemSegment* getMemSegmentForAddress(uint32_t addr) {
         // We'll just return nullptr here to indicate invalid or unexpected.
         return nullptr;
     }
-    else if (addr < 0x7FFFFFFF) {
+    else if (addr < 0x50000000) {
         return &dataSegment;
     }
     else {
@@ -802,7 +808,7 @@ bool Knob3 = true; // Enable/disable printing all the register file content at t
 bool Knob4 = true; // Enable/disable printing pipeline registers at the end of each cycle
 bool Knob5 = false; // Enable/disable tracing for a specific instruction
 int Knob5InstructionNumber = 0; // Instruction number to trace if Knob5 is enabled
-bool Knob6 = false; // Enable/disable printing branch prediction unit content
+bool Knob6 = true; // Enable/disable printing branch prediction unit content
 
 // =====================================================================
 // Function to print the contents of pipeline buffers
@@ -878,7 +884,8 @@ void printBranchPredictionUnit() {
     std::cout << "Branch Prediction Unit:\n";
     for (const auto &entry : branchPredictionTable) {
         std::cout << "PC=0x" << std::hex << entry.first 
-                  << " Prediction=" << (entry.second ? "Taken" : "Not Taken") << "\n";
+                  << " Prediction=" << (entry.second ? "Taken " : "Not Taken ")
+                  << "Target Address=0x" << std::hex << branchTargetTable[entry.first] << "\n";
     }
     std::cout << "-------------------------------------\n";
 }
@@ -906,27 +913,30 @@ void preUpdateDependencies() {
         id_ex.RB = id_ex.d.RB; // Default to original RB
         id_ex.RM = id_ex.d.RM; // Default to original RM
 
-        if (id_ex.forwardRAFromEX_MEM) {
-            id_ex.RA = ex_mem.RZ; // Forward RA from EX/MEM
-            std::cout << "[Forwarding] RZ = " << ex_mem.RZ << " to RA\n";
-        }  if (id_ex.forwardRAFromMEM_WB) {
+        if (id_ex.forwardRAFromMEM_WB) {
             id_ex.RA = mem_wb.RY; // Forward RA from MEM/WB
             std::cout << "[Forwarding] RY = " << mem_wb.RY << " to RA\n";
         }
+        if (id_ex.forwardRAFromEX_MEM) {
+            id_ex.RA = ex_mem.RZ; // Forward RA from EX/MEM
+            std::cout << "[Forwarding] RZ = " << ex_mem.RZ << " to RA\n";
+        }
 
-        if (id_ex.forwardRBFromEX_MEM) {
-            id_ex.RB = ex_mem.RZ; // Forward RB from EX/MEM
-            std::cout << "[Forwarding] RZ = " << ex_mem.RZ << " to RB\n";
-        }  if (id_ex.forwardRBFromMEM_WB) {
+        if (id_ex.forwardRBFromMEM_WB) {
             id_ex.RB = mem_wb.RY; // Forward RB from MEM/WB
             std::cout << "[Forwarding] RY = " << mem_wb.RY << " to RB\n";
         }
+        if (id_ex.forwardRBFromEX_MEM) {
+            id_ex.RB = ex_mem.RZ; // Forward RB from EX/MEM
+            std::cout << "[Forwarding] RZ = " << ex_mem.RZ << " to RB\n";
+        }
 
-        if (id_ex.forwardRMFromEX_MEM) {
-            id_ex.RM = ex_mem.RZ; // Forward RM from EX/MEM
-        }  if (id_ex.forwardRMFromMEM_WB) {
+        if (id_ex.forwardRMFromMEM_WB) {
             id_ex.RM = mem_wb.RY; // Forward RM from MEM/WB
         }
+        if (id_ex.forwardRMFromEX_MEM) {
+            id_ex.RM = ex_mem.RZ; // Forward RM from EX/MEM
+        }  
     }
 
     // Update EX/MEM values from MEM/WB
@@ -936,6 +946,7 @@ void preUpdateDependencies() {
         }
     }
 }
+
 
 // =====================================================================
 // main
@@ -961,8 +972,8 @@ int simulate(int argc, char* argv[]) {
 
     // Dump initial contents to files
     dumpInstructionMemoryToFile("instruction.mc");
-    dumpSegmentToFile("data.mc", dataSegment, 0x10000000, 0x7FFFFFFF);
-    dumpSegmentToFile("stack.mc", stackSegment, 0x7FFFFFFF, 0xFFFFFFFF);
+    dumpSegmentToFile("data.mc", dataSegment, 0x10000000, 0x50000000);
+    dumpSegmentToFile("stack.mc", stackSegment, 0x50000000, 0x7FFFFFFF);
 
     // Print initial register state
     std::cout << "Initial state (before cycle 0):\n";
@@ -1117,6 +1128,7 @@ int simulate(int argc, char* argv[]) {
                     std::cout << "[Execute] Branch prediction was correct. Continuing pipeline.\n";
                 } else {
                     std::cout << "[Execute] Branch prediction was incorrect. Flushing the next instruction.\n";
+                    branchMispredictions++; // Increment branch mispredictions
                     if_id.valid = false; // Flush the instruction in IF/ID (next instruction)
                     PC = id_ex.PC + (actualOutcome ? id_ex.d.imm : 4); // Correct PC
                 }
@@ -1160,18 +1172,12 @@ int simulate(int argc, char* argv[]) {
 
             // Check for RAW hazards (data dependencies)
             if (detectRAWHazard(id_ex.d, ex_mem, mem_wb)) {
+                dataHazards++; // Increment data hazards
                 if (Knob2) { // Data forwarding enabled
-                    // Forward data from EX/MEM to ID/EX
-                    if (ex_mem.valid && ex_mem.d.regWrite && ex_mem.d.rd != 0) {
-                        if (id_ex.d.rs1 == ex_mem.d.rd) {
-                            id_ex.forwardRAFromEX_MEM = true; // Signal to forward RA from EX/MEM
-                            std::cout << "[Forwarding] EX/MEM -> ID/EX: Forwarding RZ=" << ex_mem.RZ << " to RA\n";
-                        }
-                        // if (id_ex.d.rs2 == ex_mem.d.rd) {
-                        //     id_ex.forwardRBFromEX_MEM = true; // Signal to forward RB from EX/MEM
-                        //     std::cout << "[Forwarding] EX/MEM -> ID/EX: Forwarding RZ=" << ex_mem.RZ << " to RB\n";
-                        // }
-                    }
+                    std::cout << "dependency check\n";
+                    std::cout << "rs1: " << id_ex.d.rs1 << " rs2: " << id_ex.d.rs2 << "\n";
+                    std::cout << "ex mem rd: " << ex_mem.d.rd << " mem wb rd: " << mem_wb.d.rd << "\n";
+                    std::cout << "ex mem valid: " << ex_mem.valid << " mem wb valid: " << mem_wb.valid << "\n";
 
                     // Forward data from MEM/WB to ID/EX
                     if (mem_wb.valid && mem_wb.d.regWrite && mem_wb.d.rd != 0) {
@@ -1179,21 +1185,33 @@ int simulate(int argc, char* argv[]) {
                             id_ex.forwardRAFromMEM_WB = true; // Signal to forward RA from MEM/WB
                             std::cout << "[Forwarding] MEM/WB -> ID/EX: Forwarding RY=" << mem_wb.RY << " to RA\n";
                         }
-                        // if (id_ex.d.rs2 == mem_wb.d.rd) {
-                        //     id_ex.forwardRBFromMEM_WB = true; // Signal to forward RB from MEM/WB
-                        //     std::cout << "[Forwarding] MEM/WB -> ID/EX: Forwarding RY=" << mem_wb.RY << " to RB\n";
-                        // }
+                        if (!id_ex.d.memWrite && id_ex.d.rs2 == mem_wb.d.rd) {
+                            id_ex.forwardRBFromMEM_WB = true; // Signal to forward RB from MEM/WB
+                            std::cout << "[Forwarding] MEM/WB -> ID/EX: Forwarding RY=" << mem_wb.RY << " to RB\n";
+                        }
+                    }
+
+                    // Forward data from EX/MEM to ID/EX
+                    if (ex_mem.valid && ex_mem.d.regWrite && ex_mem.d.rd != 0) {
+                        if (id_ex.d.rs1 == ex_mem.d.rd) {
+                            id_ex.forwardRAFromEX_MEM = true; // Signal to forward RA from EX/MEM
+                            std::cout << "[Forwarding] EX/MEM -> ID/EX: Forwarding RZ=" << ex_mem.RZ << " to RA\n";
+                        }
+                        if (!id_ex.d.memWrite && id_ex.d.rs2 == ex_mem.d.rd) {
+                            id_ex.forwardRBFromEX_MEM = true; // Signal to forward RB from EX/MEM
+                            std::cout << "[Forwarding] EX/MEM -> ID/EX: Forwarding RZ=" << ex_mem.RZ << " to RB\n";
+                        }
                     }
 
                     // Forward RM for store instructions
                     if (id_ex.d.memWrite) {
-                        if (ex_mem.valid && ex_mem.d.regWrite && ex_mem.d.rd != 0 && id_ex.d.rs2 == ex_mem.d.rd) {
-                            id_ex.forwardRMFromEX_MEM = true; // Signal to forward RM from EX/MEM
-                            std::cout << "[Forwarding] EX/MEM -> ID/EX: Forwarding RZ=" << ex_mem.RZ << " to RM\n";
-                        }
                         if (mem_wb.valid && mem_wb.d.regWrite && mem_wb.d.rd != 0 && id_ex.d.rs2 == mem_wb.d.rd) {
                             id_ex.forwardRMFromMEM_WB = true; // Signal to forward RM from MEM/WB
                             std::cout << "[Forwarding] MEM/WB -> ID/EX: Forwarding RY=" << mem_wb.RY << " to RM\n";
+                        }
+                        if (ex_mem.valid && ex_mem.d.regWrite && ex_mem.d.rd != 0 && id_ex.d.rs2 == ex_mem.d.rd) {
+                            id_ex.forwardRMFromEX_MEM = true; // Signal to forward RM from EX/MEM
+                            std::cout << "[Forwarding] EX/MEM -> ID/EX: Forwarding RZ=" << ex_mem.RZ << " to RM\n";
                         }
                     }
 
@@ -1290,12 +1308,19 @@ int simulate(int argc, char* argv[]) {
                 uint32_t opcode = getBits(if_id.IR, 6, 0);
                 if (opcode == 0x63 || opcode == 0x6F || opcode == 0x67) { // Branch, JAL, JALR
                     if_id.isControlInstr = true;
+                    controlHazards++; // Increment control hazards
+                    //update branch prediction table with the predicted outcome
+                    int curPC = PC; // Store current PC for branch prediction
 
                     if (opcode == 0x6F || opcode == 0x67) { // JAL or JALR
                         // Direct jump: Update PC immediately
                         PC = (opcode == 0x6F) ? PC + decode(if_id.IR).imm : (R[getBits(if_id.IR, 19, 15)] + decode(if_id.IR).imm) & ~1U;
+                        updateBranchPrediction(curPC, true); // Update branch prediction table
+                        updateBranchTarget(curPC, PC); // Update branch target prediction
                         std::cout << "[Fetch] Jump detected. PC updated to 0x" << std::hex << PC << "\n";
                     } else if (opcode == 0x63) { // Conditional branch
+                        updateBranchTarget(curPC, PC+decode(if_id.IR).imm); // Update branch target prediction
+                        updateBranchPrediction(curPC, predictBranch(curPC)); // Update branch prediction table
                         // Predict branch outcome
                         if (predictBranch(PC)) {
                             PC += decode(if_id.IR).imm; // Predicted taken: Update PC with offset
@@ -1338,8 +1363,8 @@ int simulate(int argc, char* argv[]) {
         }
 
         // Dump memory segments to files every cycle
-        dumpSegmentToFile("data.mc", dataSegment, 0x10000000, 0x7FFFFFFF);
-        dumpSegmentToFile("stack.mc", stackSegment, 0x7FFFFFFF, 0xFFFFFFFF);
+        dumpSegmentToFile("data.mc", dataSegment, 0x10000000, 0x50000000);
+        dumpSegmentToFile("stack.mc", stackSegment, 0x50000000, 0x7FFFFFFF);
 
         // Print pipeline buffers at the end of the cycle if Knob4 is enabled
         if (Knob4) {
@@ -1417,5 +1442,6 @@ int simulate(int argc, char* argv[]) {
 
     std::cout << "Simulation finished after " << std::dec << clockCycle << " cycles.\n";
     return 0;
+
 }
 }
